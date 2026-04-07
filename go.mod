@@ -1,4 +1,4 @@
-module omnia-music
+module github.com/KresnaB/omnia-music
 
 go 1.25.0
 

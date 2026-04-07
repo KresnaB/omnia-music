@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"omnia-music/internal/app"
-	"omnia-music/internal/config"
+	"github.com/KresnaB/omnia-music/internal/app"
+	"github.com/KresnaB/omnia-music/internal/config"
 )
 
 func main() {

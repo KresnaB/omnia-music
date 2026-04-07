@@ -10,8 +10,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/jonas747/dca"
 
-	"omnia-music/internal/config"
-	"omnia-music/internal/media"
+	"github.com/KresnaB/omnia-music/internal/config"
+	"github.com/KresnaB/omnia-music/internal/media"
 )
 
 type LoopMode string

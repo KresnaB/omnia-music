@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"omnia-music/internal/config"
+	"github.com/KresnaB/omnia-music/internal/config"
 )
 
 type Resolver struct {

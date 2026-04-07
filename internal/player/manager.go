@@ -5,8 +5,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"omnia-music/internal/config"
-	"omnia-music/internal/media"
+	"github.com/KresnaB/omnia-music/internal/config"
+	"github.com/KresnaB/omnia-music/internal/media"
 )
 
 type Manager struct {

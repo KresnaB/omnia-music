@@ -9,9 +9,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"omnia-music/internal/config"
-	"omnia-music/internal/media"
-	"omnia-music/internal/player"
+	"github.com/KresnaB/omnia-music/internal/config"
+	"github.com/KresnaB/omnia-music/internal/media"
+	"github.com/KresnaB/omnia-music/internal/player"
 )
 
 type Bot struct {

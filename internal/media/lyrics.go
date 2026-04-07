@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"omnia-music/internal/config"
+	"github.com/KresnaB/omnia-music/internal/config"
 )
 
 type LyricsClient struct {
