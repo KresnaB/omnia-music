@@ -347,13 +347,15 @@ export class GuildPlayer {
       '-sn',
       '-dn',
       '-c:a',
-      'pcm_s16le',
+      'libopus',
+      '-b:a',
+      '128k',
       '-ar',
       '48000',
       '-ac',
       '2',
       '-f',
-      's16le',
+      'ogg',
       'pipe:1'
     ];
 
@@ -367,7 +369,7 @@ export class GuildPlayer {
     });
 
     const resource = createAudioResource(process.stdout, {
-      inputType: StreamType.Raw,
+      inputType: StreamType.OggOpus,
       metadata: track
     });
 
