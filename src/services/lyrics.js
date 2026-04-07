@@ -67,7 +67,7 @@ export class LyricsService {
 
     const payload = await response.json();
     if (!Array.isArray(payload) || payload.length === 0) {
-      throw new Error('Lyrics tidak ditemukan');
+      return null;
     }
 
     return payload[0];

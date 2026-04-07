@@ -164,7 +164,10 @@ client.on('interactionCreate', async (interaction) => {
           break;
         case 'lyrics': {
           await interaction.deferReply();
-          const lyric = await player.lyricsForCurrent();
+          const lyric = await player.lyricsForCurrent().catch(() => null);
+          if (!lyric) {
+            return await interaction.editReply({ content: '❌ Lirik tidak ditemukan untuk lagu ini.' });
+          }
           const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
           const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
           const text = truncate(cleanLyrics, 3800);
@@ -231,7 +234,10 @@ client.on('interactionCreate', async (interaction) => {
           break;
         case 'player:lyrics': {
           await interaction.deferReply();
-          const lyric = await player.lyricsForCurrent();
+          const lyric = await player.lyricsForCurrent().catch(() => null);
+          if (!lyric) {
+            return await interaction.editReply({ content: '❌ Lirik tidak ditemukan untuk lagu ini.' });
+          }
           const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
           const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
           const text = truncate(cleanLyrics, 3800);
@@ -243,10 +249,12 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     } catch (error) {
-      await interaction.reply({
-        content: `Error: ${truncate(error.message || 'Unknown error', 1800)}`,
-        flags: MessageFlags.Ephemeral
-      }).catch(() => null);
+      const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg }).catch(() => null);
+      } else {
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => null);
+      }
     }
   }
 });

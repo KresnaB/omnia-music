@@ -295,6 +295,10 @@ export class GuildPlayer {
   }
 
   async createAudioPipeline(track) {
+    if (!track.streamUrl) {
+      throw new Error(`Gagal mendapatkan stream audio untuk "${truncate(track.title, 50)}". Silakan coba lagi atau cari judul manual.`);
+    }
+
     const args = [
       '-nostdin',
       '-hide_banner',

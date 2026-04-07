@@ -89,8 +89,10 @@ function extractStreamUrl(entry) {
     const anyHttp = entry.formats.filter((f) => f.url && /^https?:\/\//.test(f.url));
     if (anyHttp.length > 0) return anyHttp[anyHttp.length - 1].url;
   }
-  // Fallback ke entry.url langsung
-  return entry.url && /^https?:\/\//.test(entry.url) ? entry.url : null;
+  
+  // JANGAN fallback ke entry.url jika itu adalah halaman web (youtube.com, dll)
+  // Hanya balikkan URL jika sudah didefinisikan sebagai stream
+  return null;
 }
 
 function normalizeEntry(entry, fallbackQuery = '') {
@@ -118,7 +120,7 @@ export class YTDlpService {
     const cached = getCache(query);
     if (cached) return cached;
 
-    const isPlaylist = isUrl(query) && (/[?&]list=/.test(query) || /\/playlist\?/.test(query));
+    const isPlaylist = isUrl(query) && (/[?&]list=/.test(query) || /\/playlist\?/.test(query) || /[?&]start_radio=/.test(query));
     const target = isUrl(query) ? query : `ytsearch1:${query}`;
 
     const args = [
