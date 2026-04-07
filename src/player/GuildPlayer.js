@@ -7,6 +7,7 @@ import {
   StreamType,
   createAudioPlayer,
   createAudioResource,
+  demuxProbe,
   entersState,
   getVoiceConnection,
   joinVoiceChannel
@@ -314,8 +315,10 @@ export class GuildPlayer {
       '-i',
       track.streamUrl,
       '-vn',
+      '-sn',
+      '-dn',
       '-map',
-      '0:a:0',
+      'a?',
       '-c:a',
       'libopus',
       '-b:a',
@@ -338,8 +341,9 @@ export class GuildPlayer {
       stderr += chunk.toString();
     });
 
-    const resource = createAudioResource(process.stdout, {
-      inputType: StreamType.OggOpus,
+    const probed = await demuxProbe(process.stdout);
+    const resource = createAudioResource(probed.stream, {
+      inputType: probed.type,
       metadata: track
     });
 
