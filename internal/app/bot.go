@@ -140,19 +140,25 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 }
 
 func (b *Bot) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		return
+	}
+
 	channelID, err := userVoiceChannelID(s, i.GuildID, i.Member.User.ID)
 	if err != nil {
-		b.respondAction(s, i, "", err)
+		b.editDeferredResponse(s, i, "Error: "+err.Error(), nil, nil)
 		return
 	}
 
 	track, err := b.playerFor(i).Enqueue(context.Background(), channelID, optionString(i, "query"), i.Member.DisplayName(), i.Member.User.ID)
 	if err != nil {
-		b.respondAction(s, i, "", err)
+		b.editDeferredResponse(s, i, "Error: "+err.Error(), nil, nil)
 		return
 	}
 
-	b.respondRich(s, i, nowPlayingEmbed(track, b.playerFor(i).Status()), controlRows())
+	b.editDeferredResponse(s, i, "", nowPlayingEmbed(track, b.playerFor(i).Status()), controlRows())
 }
 
 func (b *Bot) handleQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -205,9 +211,18 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 }
 
 func (b *Bot) handleLyrics(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	}); err != nil {
+		return
+	}
+
 	result, err := b.playerFor(i).FetchLyrics(context.Background())
 	if err != nil {
-		b.respondAction(s, i, "", err)
+		b.editDeferredResponse(s, i, "Error: "+err.Error(), nil, nil)
 		return
 	}
 
@@ -219,11 +234,11 @@ func (b *Bot) handleLyrics(s *discordgo.Session, i *discordgo.InteractionCreate)
 		text = text[:3500] + "\n..."
 	}
 
-	b.respondEmbed(s, i, &discordgo.MessageEmbed{
+	b.editDeferredResponse(s, i, "", &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("Lyrics: %s - %s", result.ArtistName, result.TrackName),
 		Description: text,
 		Color:       0xF1C40F,
-	})
+	}, nil)
 }
 
 func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -330,6 +345,20 @@ func (b *Bot) respondRich(s *discordgo.Session, i *discordgo.InteractionCreate, 
 			Components: components,
 		},
 	})
+}
+
+func (b *Bot) editDeferredResponse(s *discordgo.Session, i *discordgo.InteractionCreate, content string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) {
+	data := &discordgo.WebhookEdit{}
+	if content != "" {
+		data.Content = &content
+	}
+	if embed != nil {
+		data.Embeds = &[]*discordgo.MessageEmbed{embed}
+	}
+	if components != nil {
+		data.Components = &components
+	}
+	_, _ = s.InteractionResponseEdit(i.Interaction, data)
 }
 
 func (b *Bot) playerFor(i *discordgo.InteractionCreate) *player.GuildPlayer {
