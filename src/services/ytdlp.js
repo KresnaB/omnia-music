@@ -171,7 +171,8 @@ function buildCanonicalWebpageUrl(entry, fallbackQuery = '') {
   }
 
   const extractor = String(entry.extractor_key || entry.ie_key || '').toLowerCase();
-  if ((extractor.includes('youtube') || extractor === 'youtube') && entry.id) {
+  const looksLikeYoutubeId = typeof entry.id === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(entry.id);
+  if (((extractor.includes('youtube') || extractor === 'youtube') && entry.id) || looksLikeYoutubeId) {
     return `https://www.youtube.com/watch?v=${entry.id}`;
   }
 

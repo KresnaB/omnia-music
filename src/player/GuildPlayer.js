@@ -140,6 +140,14 @@ export class GuildPlayer {
       originalQuery: query
     }));
 
+    if (resolved.type === 'playlist' && tracks[0]) {
+      try {
+        await this.ytdlp.hydrate(tracks[0]);
+      } catch (error) {
+        console.warn(`[player:${this.guildId}] first playlist track pre-hydrate failed:`, error.message);
+      }
+    }
+
     this.queue.push(...tracks);
 
     if (!this.current) {
