@@ -1,0 +1,11 @@
+services:
+  omnia-music:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omnia-music
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config
