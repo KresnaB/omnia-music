@@ -61,9 +61,16 @@ func (r *Resolver) Resolve(ctx context.Context, query string) (*TrackInfo, error
 	}
 
 	cmd := exec.CommandContext(ctx, r.cfg.YTDLPPath, args...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("yt-dlp resolve failed: %w", err)
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return nil, fmt.Errorf("yt-dlp resolve failed: %w", err)
+		}
+		if len(detail) > 500 {
+			detail = detail[:500] + "..."
+		}
+		return nil, fmt.Errorf("yt-dlp resolve failed: %s", detail)
 	}
 
 	var result ytDLPResult

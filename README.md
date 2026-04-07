@@ -64,6 +64,38 @@ go run ./cmd/bot
 docker compose up --build -d
 ```
 
+## Troubleshooting yt-dlp
+
+Kalau `/play` membalas error `yt-dlp resolve failed`, cek ini di server:
+
+1. Pastikan file cookies memang ada:
+
+```bash
+ls -lah ~/omnia-music/config/cookies.txt
+```
+
+2. Pastikan format cookies adalah format Netscape, bukan hasil copy mentah dari browser
+
+3. Tes manual di host:
+
+```bash
+yt-dlp --cookies ~/omnia-music/config/cookies.txt --no-playlist --default-search youtube -f bestaudio/best --print-json "ytsearch1:alan walker faded"
+```
+
+4. Tes juga dari dalam container:
+
+```bash
+docker compose exec omnia-music yt-dlp --cookies /app/config/cookies.txt --no-playlist --default-search youtube -f bestaudio/best --print-json "ytsearch1:alan walker faded"
+```
+
+5. Kalau hasilnya error login, age restriction, atau cookies invalid, export ulang cookies browser lalu restart container
+
+6. Lihat log bot:
+
+```bash
+docker compose logs -f
+```
+
 ## Catatan
 
 - Spotify tidak di-stream langsung dari Spotify karena DRM. Praktiknya bot memakai query/URL yang bisa di-resolve `yt-dlp`.
