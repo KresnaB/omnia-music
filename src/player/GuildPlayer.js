@@ -315,6 +315,10 @@ export class GuildPlayer {
 
     if (this.queue.length > 0) {
       await this.preloadNextTrack();
+    }
+
+    const hasAutoplayQueued = this.queue.some((track) => track.requester?.id === 'autoplay');
+    if (hasAutoplayQueued) {
       return;
     }
 
@@ -359,6 +363,7 @@ export class GuildPlayer {
         if (!existsInQueue && !existsInHistory && !isCurrent) {
           this.queue.push(prepared);
           this.shuffleActive = false;
+          void this.publishNowPlaying('queue-update');
         }
       } catch (error) {
         console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
