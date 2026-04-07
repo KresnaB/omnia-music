@@ -82,7 +82,11 @@ func (r *Resolver) Resolve(ctx context.Context, query string) (*TrackInfo, error
 	}
 
 	var result ytDLPResult
-	if err := json.Unmarshal(out, &result); err != nil {
+	payload := extractJSONLine(string(out))
+	if payload == "" {
+		payload = strings.TrimSpace(string(out))
+	}
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
 		return nil, fmt.Errorf("decode yt-dlp json: %w", err)
 	}
 
@@ -114,4 +118,15 @@ func (r *Resolver) Resolve(ctx context.Context, query string) (*TrackInfo, error
 func looksLikeURL(v string) bool {
 	v = strings.ToLower(strings.TrimSpace(v))
 	return strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://")
+}
+
+func extractJSONLine(output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+			return line
+		}
+	}
+	return ""
 }
