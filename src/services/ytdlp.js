@@ -41,6 +41,21 @@ function isUrl(input) {
   return /^https?:\/\//i.test(input.trim());
 }
 
+function normalizeQuery(input) {
+  const value = input.trim();
+  if (!isUrl(value)) return value;
+
+  try {
+    const url = new URL(value);
+    if (url.hostname === 'music.youtube.com') {
+      url.hostname = 'www.youtube.com';
+    }
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
 function isPlaylistLike(query, result) {
   if (Array.isArray(result?.entries) && result.entries.length > 1) return true;
   return /[?&]list=/.test(query) || /\/playlist\?/.test(query);
@@ -134,11 +149,12 @@ function normalizeEntry(entry, fallbackQuery = '') {
 
 export class YTDlpService {
   async resolve(query) {
-    const cached = getCache(query);
+    const normalizedQuery = normalizeQuery(query);
+    const cached = getCache(normalizedQuery);
     if (cached) return cached;
 
-    const isPlaylist = isUrl(query) && (/[?&]list=/.test(query) || /\/playlist\?/.test(query) || /[?&]start_radio=/.test(query));
-    const target = isUrl(query) ? query : `ytsearch1:${query}`;
+    const isPlaylist = isUrl(normalizedQuery) && (/[?&]list=/.test(normalizedQuery) || /\/playlist\?/.test(normalizedQuery) || /[?&]start_radio=/.test(normalizedQuery));
+    const target = isUrl(normalizedQuery) ? normalizedQuery : `ytsearch1:${normalizedQuery}`;
 
     const args = [
       ...buildBaseArgs(),
@@ -160,30 +176,30 @@ export class YTDlpService {
           const entries = payload.entries
             .filter(Boolean)
             .slice(0, config.maxPlaylistTracks)
-            .map((entry) => normalizeEntry(entry, entry.title || query));
+            .map((entry) => normalizeEntry(entry, entry.title || normalizedQuery));
 
           const resultPayload = {
             type: 'playlist',
             playlistTitle: payload.title || 'Playlist',
             tracks: entries
           };
-          setCache(query, resultPayload);
+          setCache(normalizedQuery, resultPayload);
           return resultPayload;
         }
 
         const resultPayload = {
           type: 'single',
-          tracks: [normalizeEntry(payload.entries[0], query)]
+          tracks: [normalizeEntry(payload.entries[0], normalizedQuery)]
         };
-        setCache(query, resultPayload);
+        setCache(normalizedQuery, resultPayload);
         return resultPayload;
       }
 
       const resultPayload = {
         type: 'single',
-        tracks: [normalizeEntry(payload, query)]
+        tracks: [normalizeEntry(payload, normalizedQuery)]
       };
-      setCache(query, resultPayload);
+      setCache(normalizedQuery, resultPayload);
       return resultPayload;
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;

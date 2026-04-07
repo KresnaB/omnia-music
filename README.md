@@ -7,6 +7,7 @@ Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, sia
 - Slash command: `/play`, `/skip`, `/stop`, `/seek`, `/queue`, `/loop`, `/shuffle`, `/autoplay`, `/help`, `/move`, `/status`, `/lyrics`, `/sleep`, `/reconnect`
 - Embed now playing dengan tombol play/pause, skip, stop, shuffle, autoplay, loop, queue, dan lyrics
 - Playlist URL otomatis dimasukkan ke queue dengan batas maksimum 100 lagu pertama
+- Link `music.youtube.com` akan dinormalisasi otomatis ke URL YouTube standar sebelum di-resolve
 - Preprocessing lagu berikutnya agar perpindahan track lebih cepat
 - First play memakai deferred interaction agar tidak timeout saat resolve awal
 - Lyrics dari LRCLIB
