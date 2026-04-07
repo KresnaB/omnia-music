@@ -47,6 +47,8 @@ export class GuildPlayer {
     this.consecutiveErrors = 0;
     this.skipRequested = false;
     this.stopRequested = false;
+    this.autoplayPreparePromise = null;
+    this.autoplaySeedId = null;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -257,6 +259,68 @@ export class GuildPlayer {
     }
   }
 
+  async prepareAutoplayTrack() {
+    const seed = this.current || this.history[this.history.length - 1];
+    if (!this.autoplay || !seed) {
+      return;
+    }
+
+    if (this.queue.length > 0) {
+      await this.preloadNextTrack();
+      return;
+    }
+
+    if (this.autoplayPreparePromise && this.autoplaySeedId === seed.id) {
+      await this.autoplayPreparePromise;
+      return;
+    }
+
+    this.autoplaySeedId = seed.id;
+    this.autoplayPreparePromise = (async () => {
+      try {
+        let query;
+        if (seed.source === 'youtube' && seed.id && seed.id.length === 11) {
+          query = `https://www.youtube.com/watch?v=${seed.id}&list=RD${seed.id}`;
+        } else {
+          query = `ytsearch5:${seed.uploader || seed.title} best hits audio`;
+        }
+
+        const auto = await this.ytdlp.resolve(query);
+        const candidates = auto.tracks.filter((t) => t.id !== seed.id && !this.history.some((h) => h.id === t.id));
+        const chosen = candidates.length > 0
+          ? candidates[Math.floor(Math.random() * Math.min(candidates.length, 5))]
+          : auto.tracks[0];
+
+        if (!chosen) {
+          return;
+        }
+
+        const prepared = {
+          ...chosen,
+          requester: { id: 'autoplay', name: 'Autoplay' },
+          addedAt: Date.now(),
+          originalQuery: 'Autoplay Suggestion'
+        };
+
+        await this.ytdlp.hydrate(prepared);
+
+        const existsInQueue = this.queue.some((track) => track.id === prepared.id);
+        const existsInHistory = this.history.some((track) => track.id === prepared.id);
+        const isCurrent = this.current?.id === prepared.id;
+
+        if (!existsInQueue && !existsInHistory && !isCurrent) {
+          this.queue.push(prepared);
+        }
+      } catch (error) {
+        console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
+      } finally {
+        this.autoplayPreparePromise = null;
+      }
+    })();
+
+    await this.autoplayPreparePromise;
+  }
+
   async playNext(reason = 'manual') {
     clearTimeout(this.idleTimeout);
 
@@ -265,33 +329,8 @@ export class GuildPlayer {
       return;
     }
 
-    if (this.queue.length === 0 && this.autoplay && this.history.length > 0) {
-      const last = this.history[this.history.length - 1];
-      try {
-        let query;
-        if (last.source === 'youtube' && last.id && last.id.length === 11) {
-          query = `https://www.youtube.com/watch?v=${last.id}&list=RD${last.id}`;
-        } else {
-          query = `ytsearch5:${last.uploader || last.title} best hits audio`;
-        }
-
-        const auto = await this.ytdlp.resolve(query);
-        const candidates = auto.tracks.filter(t => t.id !== last.id && !this.history.some(h => h.id === t.id));
-        const chosen = candidates.length > 0
-          ? candidates[Math.floor(Math.random() * Math.min(candidates.length, 5))]
-          : auto.tracks[0];
-
-        if (chosen) {
-          this.queue.push({
-            ...chosen,
-            requester: { id: 'autoplay', name: 'Autoplay' },
-            addedAt: Date.now(),
-            originalQuery: 'Autoplay Suggestion'
-          });
-        }
-      } catch (error) {
-        console.warn(`[player:${this.guildId}] autoplay failed:`, error.message);
-      }
+    if (this.queue.length === 0 && this.autoplay) {
+      await this.prepareAutoplayTrack();
     }
 
     const next = this.queue.shift();
@@ -323,6 +362,7 @@ export class GuildPlayer {
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
       void this.preloadNextTrack();
+      void this.prepareAutoplayTrack();
     } catch (error) {
       console.error(`[player:${this.guildId}] playNext failed:`, error.message);
       this.consecutiveErrors++;
@@ -568,6 +608,12 @@ export class GuildPlayer {
 
   toggleAutoplay() {
     this.autoplay = !this.autoplay;
+    if (this.autoplay) {
+      void this.prepareAutoplayTrack();
+    } else {
+      this.autoplayPreparePromise = null;
+      this.autoplaySeedId = null;
+    }
     void this.publishNowPlaying('update');
     return this.autoplay;
   }

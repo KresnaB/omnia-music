@@ -8,7 +8,7 @@ Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, sia
 - Embed now playing dengan tombol play/pause, skip, stop, shuffle, autoplay, loop, queue, dan lyrics
 - Playlist URL otomatis dimasukkan ke queue dengan batas maksimum 100 lagu pertama
 - Link `music.youtube.com` akan dinormalisasi otomatis ke URL YouTube standar sebelum di-resolve
-- Preprocessing lagu berikutnya agar perpindahan track lebih cepat
+- Preprocessing lagu berikutnya di background untuk queue dan autoplay agar perpindahan track lebih seamless
 - First play memakai deferred interaction agar tidak timeout saat resolve awal
 - Lyrics dari LRCLIB
 - `yt-dlp` + POT provider `bgutil-pot`
@@ -110,7 +110,8 @@ YTDLP_COOKIES_FILE=
 ## Cara Kerja Queue dan Preload
 
 - Jika user paste playlist URL, bot hanya mengambil 100 lagu pertama
-- Saat satu lagu mulai diputar, bot langsung menyiapkan metadata/stream URL lagu berikutnya
+- Saat satu lagu mulai diputar, bot langsung menyiapkan metadata/stream URL lagu berikutnya dari queue
+- Jika queue kosong tetapi autoplay aktif, bot juga menyiapkan kandidat autoplay berikutnya di background sebelum lagu saat ini selesai
 - Tujuannya agar pindah ke lagu selanjutnya lebih cepat dan first play tidak terasa terlalu lama
 
 ## Troubleshooting
