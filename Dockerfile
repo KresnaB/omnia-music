@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
   && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
   && chmod a+rx /usr/local/bin/yt-dlp \
+  && curl -fsSL https://deno.land/install.sh | sh \
+  && ln -sf /root/.deno/bin/deno /usr/local/bin/deno \
   && mkdir -p /root/yt-dlp-plugins \
   && curl -L https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip -o /tmp/bgutil-pot.zip \
   && unzip /tmp/bgutil-pot.zip -d /root/yt-dlp-plugins \

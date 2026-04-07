@@ -84,6 +84,12 @@ docker compose logs --tail=100 bgutil-pot
 docker compose exec omnia-music yt-dlp -v "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
+Anda seharusnya melihat runtime JavaScript tersedia. Cek juga:
+
+```bash
+docker compose exec omnia-music deno --version
+```
+
 3. Jika memakai cookies, pastikan file cookies memang ada:
 
 ```bash
