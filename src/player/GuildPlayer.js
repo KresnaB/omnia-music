@@ -148,7 +148,7 @@ export class GuildPlayer {
       }
     }
 
-    this.queue.push(...tracks);
+    this.insertUserTracks(tracks);
 
     if (!this.current) {
       void this.playNext('enqueue');
@@ -157,6 +157,16 @@ export class GuildPlayer {
     }
 
     return { ...resolved, tracks };
+  }
+
+  insertUserTracks(tracks) {
+    const firstAutoplayIndex = this.queue.findIndex((track) => track.requester?.id === 'autoplay');
+    if (firstAutoplayIndex === -1) {
+      this.queue.push(...tracks);
+      return;
+    }
+
+    this.queue.splice(firstAutoplayIndex, 0, ...tracks);
   }
 
   async ensureVoice(voiceChannel) {
