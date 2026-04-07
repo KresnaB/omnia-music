@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY package.json package-lock.json /app/
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 COPY src /app/src
 COPY .env.example /app/.env.example
