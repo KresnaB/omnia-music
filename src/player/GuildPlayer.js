@@ -292,6 +292,14 @@ export class GuildPlayer {
     this.lyricMessages = [];
   }
 
+  async closePlayerMessage() {
+    this.clearLyricMessages();
+    if (this.currentMessage) {
+      await this.currentMessage.delete().catch(() => null);
+      this.currentMessage = null;
+    }
+  }
+
   async preloadUpcomingTracks() {
     const nextTrack = this.queue[0];
     if (!nextTrack?.id || this.preloadInFlight.has(nextTrack.id)) {
@@ -393,6 +401,7 @@ export class GuildPlayer {
     this.current = next || null;
 
     if (!next) {
+      await this.closePlayerMessage();
       this.resetIdleTimer();
       return;
     }
