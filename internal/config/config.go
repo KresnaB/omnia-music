@@ -16,6 +16,8 @@ type Config struct {
 	FFmpegPath            string
 	YTDLPPath             string
 	YTDLPCookiesFile      string
+	YTDLPYoutubeArgs      string
+	YTDLPPotProviderArgs  string
 	LRCLibBaseURL         string
 	DefaultVolume         int
 	DefaultIdleTimeout    time.Duration
@@ -32,6 +34,8 @@ func Load() (*Config, error) {
 		FFmpegPath:            withDefault(os.Getenv("FFMPEG_PATH"), "ffmpeg"),
 		YTDLPPath:             withDefault(os.Getenv("YTDLP_PATH"), "yt-dlp"),
 		YTDLPCookiesFile:      os.Getenv("YTDLP_COOKIES_FILE"),
+		YTDLPYoutubeArgs:      withDefault(os.Getenv("YTDLP_YOUTUBE_EXTRACTOR_ARGS"), "youtube:player_client=default,mweb"),
+		YTDLPPotProviderArgs:  withDefault(os.Getenv("YTDLP_POT_PROVIDER_ARGS"), "youtubepot-bgutilhttp:base_url=http://bgutil-pot:4416;disable_innertube=1"),
 		LRCLibBaseURL:         withDefault(os.Getenv("LRCLIB_BASE_URL"), "https://lrclib.net"),
 		DefaultVolume:         envInt("DEFAULT_VOLUME", 100),
 		DefaultIdleTimeout:    envDuration("DEFAULT_IDLE_TIMEOUT", 10*time.Minute),
@@ -41,9 +45,6 @@ func Load() (*Config, error) {
 
 	if cfg.DiscordToken == "" {
 		return nil, errors.New("DISCORD_TOKEN is required")
-	}
-	if cfg.YTDLPCookiesFile == "" {
-		return nil, errors.New("YTDLP_COOKIES_FILE is required for cookie-based yt-dlp access")
 	}
 	if cfg.DefaultVolume < 0 || cfg.DefaultVolume > 200 {
 		return nil, fmt.Errorf("DEFAULT_VOLUME must be between 0 and 200")

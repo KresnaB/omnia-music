@@ -8,14 +8,14 @@ Bot musik Discord berbasis Go yang ringan, cepat, dan siap deploy via Docker.
 - Embed now playing dengan judul, durasi, requester, uploader, dan source
 - Tombol kontrol: play/pause, skip, stop, shuffle, autoplay, loop, queue, lyrics
 - Integrasi lyrics via LRCLIB
-- `yt-dlp` berbasis cookies file
+- `yt-dlp` dengan PO Token provider (`bgutil-pot`) dan cookies opsional
 - Dockerfile dan `docker-compose.yml`
 
 ## Setup Lokal
 
 1. Copy `.env.example` menjadi `.env`
-2. Isi `DISCORD_TOKEN`, `DEV_GUILD_ID`, dan `YTDLP_COOKIES_FILE`
-3. Simpan cookies format Netscape di path yang ditentukan
+2. Isi `DISCORD_TOKEN` dan `DEV_GUILD_ID`
+3. Jika ingin memakai cookies untuk konten tertentu, isi `YTDLP_COOKIES_FILE` dan simpan cookies format Netscape di path yang ditentukan
 4. Pastikan `ffmpeg` dan `yt-dlp` tersedia
 5. Jalankan:
 
@@ -56,8 +56,11 @@ go run ./cmd/bot
 ## Setup Docker
 
 1. Buat folder `config`
-2. Simpan cookies di `config/cookies.txt`
-3. Set `.env` dengan `YTDLP_COOKIES_FILE=/app/config/cookies.txt`
+2. Jika ingin memakai cookies, simpan di `config/cookies.txt`
+3. Set `.env`:
+   - `YTDLP_COOKIES_FILE=/app/config/cookies.txt` bila memakai cookies
+   - `YTDLP_YOUTUBE_EXTRACTOR_ARGS=youtube:player_client=default,mweb`
+   - `YTDLP_POT_PROVIDER_ARGS=youtubepot-bgutilhttp:base_url=http://bgutil-pot:4416;disable_innertube=1`
 4. Jalankan:
 
 ```bash
@@ -68,29 +71,42 @@ docker compose up --build -d
 
 Kalau `/play` membalas error `yt-dlp resolve failed`, cek ini di server:
 
-1. Pastikan file cookies memang ada:
+1. Pastikan service POT provider aktif:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 bgutil-pot
+```
+
+2. Verifikasi `yt-dlp` dalam container bisa melihat plugin/provider:
+
+```bash
+docker compose exec omnia-music yt-dlp -v "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+3. Jika memakai cookies, pastikan file cookies memang ada:
 
 ```bash
 ls -lah ~/omnia-music/config/cookies.txt
 ```
 
-2. Pastikan format cookies adalah format Netscape, bukan hasil copy mentah dari browser
+4. Pastikan format cookies adalah format Netscape, bukan hasil copy mentah dari browser
 
-3. Tes manual di host:
-
-```bash
-yt-dlp --cookies ~/omnia-music/config/cookies.txt --no-playlist --default-search youtube -f bestaudio/best --print-json "ytsearch1:alan walker faded"
-```
-
-4. Tes juga dari dalam container:
+5. Tes manual di host:
 
 ```bash
-docker compose exec omnia-music yt-dlp --cookies /app/config/cookies.txt --no-playlist --default-search youtube -f bestaudio/best --print-json "ytsearch1:alan walker faded"
+yt-dlp --extractor-args "youtube:player_client=default,mweb" --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416;disable_innertube=1" --no-playlist --default-search youtube -f bestaudio/best --print-json "ytsearch1:alan walker faded"
 ```
 
-5. Kalau hasilnya error login, age restriction, atau cookies invalid, export ulang cookies browser lalu restart container
+6. Tes juga dari dalam container:
 
-6. Lihat log bot:
+```bash
+docker compose exec omnia-music yt-dlp --extractor-args "youtube:player_client=default,mweb" --extractor-args "youtubepot-bgutilhttp:base_url=http://bgutil-pot:4416;disable_innertube=1" --no-playlist --default-search youtube -f bestaudio/best --print-json "ytsearch1:alan walker faded"
+```
+
+7. Kalau hasilnya error login, age restriction, atau cookies invalid, export ulang cookies browser lalu restart container
+
+8. Lihat log bot:
 
 ```bash
 docker compose logs -f

@@ -9,3 +9,11 @@ services:
       - .env
     volumes:
       - ./config:/app/config
+    depends_on:
+      - bgutil-pot
+
+  bgutil-pot:
+    image: ghcr.io/jim60105/bgutil-pot:latest
+    container_name: bgutil-pot
+    restart: unless-stopped
+    command: ["server", "--host", "0.0.0.0", "--port", "4416"]

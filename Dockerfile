@@ -12,9 +12,15 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     ffmpeg \
-    python3 \
-    yt-dlp \
+    unzip \
+  && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+  && chmod a+rx /usr/local/bin/yt-dlp \
+  && mkdir -p /root/yt-dlp-plugins \
+  && curl -L https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip -o /tmp/bgutil-pot.zip \
+  && unzip /tmp/bgutil-pot.zip -d /root/yt-dlp-plugins \
+  && rm -f /tmp/bgutil-pot.zip \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -26,5 +32,6 @@ RUN mkdir -p /app/config
 
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
+ENV HOME=/root
 
 CMD ["/app/omnia-music"]

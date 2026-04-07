@@ -52,13 +52,21 @@ func (r *Resolver) Resolve(ctx context.Context, query string) (*TrackInfo, error
 	}
 
 	args := []string{
-		"--cookies", r.cfg.YTDLPCookiesFile,
 		"--no-playlist",
 		"--default-search", r.cfg.DefaultSearchPlatform,
 		"-f", "bestaudio/best",
 		"--print-json",
-		target,
 	}
+	if r.cfg.YTDLPYoutubeArgs != "" {
+		args = append(args, "--extractor-args", r.cfg.YTDLPYoutubeArgs)
+	}
+	if r.cfg.YTDLPPotProviderArgs != "" {
+		args = append(args, "--extractor-args", r.cfg.YTDLPPotProviderArgs)
+	}
+	if r.cfg.YTDLPCookiesFile != "" {
+		args = append(args, "--cookies", r.cfg.YTDLPCookiesFile)
+	}
+	args = append(args, target)
 
 	cmd := exec.CommandContext(ctx, r.cfg.YTDLPPath, args...)
 	out, err := cmd.CombinedOutput()
