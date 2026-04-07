@@ -51,6 +51,7 @@ export class GuildPlayer {
     this.autoplayPreparePromise = null;
     this.autoplaySeedId = null;
     this.currentMetrics = null;
+    this.preloadInFlight = new Set();
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -179,7 +180,7 @@ export class GuildPlayer {
     if (!this.current) {
       void this.playNext('enqueue');
     } else {
-      void this.preloadNextTrack();
+      void this.preloadUpcomingTracks();
     }
 
     return { ...resolved, tracks };
@@ -291,20 +292,28 @@ export class GuildPlayer {
     this.lyricMessages = [];
   }
 
-  async preloadNextTrack() {
-    const nextTrack = this.queue[0];
-    if (!nextTrack || this.preloading === nextTrack.id) {
+  async preloadUpcomingTracks() {
+    const targets = this.queue.slice(0, Math.max(1, config.preloadWindow));
+    if (targets.length === 0) {
       return;
     }
 
-    this.preloading = nextTrack.id;
-    try {
-      await this.ytdlp.hydrate(nextTrack);
-    } catch (error) {
-      console.warn(`[player:${this.guildId}] preload failed:`, error.message);
-    } finally {
-      this.preloading = null;
-    }
+    await Promise.all(
+      targets.map(async (track) => {
+        if (!track?.id || this.preloadInFlight.has(track.id)) {
+          return;
+        }
+
+        this.preloadInFlight.add(track.id);
+        try {
+          await this.ytdlp.hydrate(track);
+        } catch (error) {
+          console.warn(`[player:${this.guildId}] preload failed for ${track.title}:`, error.message);
+        } finally {
+          this.preloadInFlight.delete(track.id);
+        }
+      })
+    );
   }
 
   async prepareAutoplayTrack() {
@@ -314,7 +323,7 @@ export class GuildPlayer {
     }
 
     if (this.queue.length > 0) {
-      await this.preloadNextTrack();
+      await this.preloadUpcomingTracks();
       return;
     }
 
@@ -431,7 +440,7 @@ export class GuildPlayer {
       this.currentMetrics = metrics;
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
-      void this.preloadNextTrack();
+      void this.preloadUpcomingTracks();
       if (this.autoplay && this.queue.length === 0) {
         void this.prepareAutoplayTrack();
       }
@@ -668,7 +677,7 @@ export class GuildPlayer {
       [this.queue[i], this.queue[j]] = [this.queue[j], this.queue[i]];
     }
     this.shuffleActive = this.queue.length > 1;
-    void this.preloadNextTrack();
+    void this.preloadUpcomingTracks();
     void this.publishNowPlaying('queue-update');
     return this.queue.length;
   }
@@ -681,7 +690,7 @@ export class GuildPlayer {
 
     const [track] = this.queue.splice(from - 1, 1);
     this.queue.splice(to - 1, 0, track);
-    void this.preloadNextTrack();
+    void this.preloadUpcomingTracks();
     void this.publishNowPlaying('queue-update');
   }
 
