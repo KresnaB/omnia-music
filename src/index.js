@@ -163,12 +163,15 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ embeds: [statusEmbed(player)], flags: MessageFlags.Ephemeral });
           break;
         case 'lyrics': {
-          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          await interaction.deferReply();
           const lyric = await player.lyricsForCurrent();
-          const text = truncate(lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.', 3800);
-          await interaction.editReply({
+          const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
+          const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
+          const text = truncate(cleanLyrics, 3800);
+          const msg = await interaction.editReply({
             embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`Lyrics: ${lyric.artistName} - ${lyric.trackName}`).setDescription(text)]
           });
+          player.addLyricMessage(msg);
           break;
         }
         case 'sleep': {
@@ -227,12 +230,15 @@ client.on('interactionCreate', async (interaction) => {
           });
           break;
         case 'player:lyrics': {
+          await interaction.deferReply();
           const lyric = await player.lyricsForCurrent();
-          const text = truncate(lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.', 3800);
-          await interaction.reply({
-            embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`Lyrics: ${lyric.artistName} - ${lyric.trackName}`).setDescription(text)],
-            flags: MessageFlags.Ephemeral
+          const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
+          const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
+          const text = truncate(cleanLyrics, 3800);
+          const msg = await interaction.editReply({
+            embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`Lyrics: ${lyric.artistName} - ${lyric.trackName}`).setDescription(text)]
           });
+          player.addLyricMessage(msg);
           break;
         }
       }

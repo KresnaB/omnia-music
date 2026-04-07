@@ -70,6 +70,10 @@ function buildBaseArgs() {
 }
 
 function extractStreamUrl(entry) {
+  if (entry._type === 'url' || entry._type === 'url_transparent') {
+    return null;
+  }
+
   // Coba cari format audio terbaik dari field `formats`
   if (Array.isArray(entry.formats) && entry.formats.length > 0) {
     // Prioritas: format audio-only dengan extension webm/ogg/m4a
@@ -176,6 +180,8 @@ export class YTDlpService {
     const target = track.webpageUrl || track.url || track.searchQuery || track.title;
     const args = [
       ...buildBaseArgs(),
+      '-f',
+      'bestaudio/best',
       '--dump-single-json',
       '--no-playlist',
       target

@@ -42,6 +42,7 @@ export class GuildPlayer {
     this.sleepTimeout = null;
     this.sleepUntil = null;
     this.lastTextChannelId = null;
+    this.lyricMessages = [];
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -198,6 +199,17 @@ export class GuildPlayer {
     }
   }
 
+  addLyricMessage(msg) {
+    if (msg) this.lyricMessages.push(msg);
+  }
+
+  clearLyricMessages() {
+    for (const msg of this.lyricMessages) {
+      msg.delete().catch(() => null);
+    }
+    this.lyricMessages = [];
+  }
+
   async preloadNextTrack() {
     const nextTrack = this.queue[0];
     if (!nextTrack || this.preloading === nextTrack.id) {
@@ -225,13 +237,27 @@ export class GuildPlayer {
     if (this.queue.length === 0 && this.autoplay && this.history.length > 0) {
       const last = this.history[this.history.length - 1];
       try {
-        const auto = await this.ytdlp.resolve(`${last.title} ${last.uploader} audio`);
-        if (auto.tracks[0]) {
+        let query;
+        if (last.source === 'youtube' && last.id && last.id.length === 11) {
+          // Manfaatkan algoritma Auto Mix YouTube
+          query = `https://www.youtube.com/watch?v=${last.id}&list=RD${last.id}`;
+        } else {
+          // Generic search for related artist
+          query = `ytsearch5:${last.uploader || last.title} best hits audio`;
+        }
+
+        const auto = await this.ytdlp.resolve(query);
+        const candidates = auto.tracks.filter(t => t.id !== last.id && !this.history.some(h => h.id === t.id));
+        const chosen = candidates.length > 0
+          ? candidates[Math.floor(Math.random() * Math.min(candidates.length, 5))]
+          : auto.tracks[0];
+
+        if (chosen) {
           this.queue.push({
-            ...auto.tracks[0],
+            ...chosen,
             requester: { id: 'autoplay', name: 'Autoplay' },
             addedAt: Date.now(),
-            originalQuery: auto.tracks[0].title
+            originalQuery: 'Autoplay Suggestion'
           });
         }
       } catch (error) {
@@ -261,6 +287,7 @@ export class GuildPlayer {
       this.currentProcess.kill('SIGKILL');
     }
 
+    this.clearLyricMessages();
     this.currentProcess = prepared.process;
     this.player.play(prepared.resource);
     await this.publishNowPlaying(reason);
@@ -380,8 +407,8 @@ export class GuildPlayer {
         new ButtonBuilder().setCustomId('player:shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('player:autoplay').setLabel('Autoplay').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('player:loop').setLabel('Loop').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player:autoplay').setLabel('Autoplay').setStyle(this.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player:loop').setLabel(`Loop ${this.loopMode !== 'off' ? this.loopMode : ''}`).setStyle(this.loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('player:queue').setLabel('Queue').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('player:lyrics').setLabel('Lyrics').setStyle(ButtonStyle.Secondary)
       )
@@ -414,6 +441,12 @@ export class GuildPlayer {
     if (this.currentProcess) {
       this.currentProcess.kill('SIGKILL');
       this.currentProcess = null;
+    }
+
+    this.clearLyricMessages();
+    if (this.currentMessage) {
+      await this.currentMessage.delete().catch(() => null);
+      this.currentMessage = null;
     }
 
     if (disconnect) {
@@ -462,15 +495,18 @@ export class GuildPlayer {
 
   setLoopMode(mode) {
     this.loopMode = mode;
+    void this.publishNowPlaying('update');
   }
 
   nextLoopMode() {
     this.loopMode = this.loopMode === 'off' ? 'track' : this.loopMode === 'track' ? 'queue' : 'off';
+    void this.publishNowPlaying('update');
     return this.loopMode;
   }
 
   toggleAutoplay() {
     this.autoplay = !this.autoplay;
+    void this.publishNowPlaying('update');
     return this.autoplay;
   }
 
