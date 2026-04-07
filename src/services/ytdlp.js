@@ -1,0 +1,148 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { config } from '../config.js';
+
+const execFileAsync = promisify(execFile);
+
+function parseJsonBlob(output) {
+  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if ((line.startsWith('{') && line.endsWith('}')) || (line.startsWith('[') && line.endsWith(']'))) {
+      return JSON.parse(line);
+    }
+  }
+
+  return JSON.parse(output);
+}
+
+function isUrl(input) {
+  return /^https?:\/\//i.test(input.trim());
+}
+
+function isPlaylistLike(query, result) {
+  if (Array.isArray(result?.entries) && result.entries.length > 1) return true;
+  return /[?&]list=/.test(query) || /\/playlist\?/.test(query);
+}
+
+function buildBaseArgs() {
+  const args = [
+    '--default-search',
+    config.defaultSearchPlatform,
+    '--no-warnings',
+    '--skip-download'
+  ];
+
+  if (config.ytDlpYoutubeArgs) {
+    args.push('--extractor-args', config.ytDlpYoutubeArgs);
+  }
+
+  if (config.ytDlpPotProviderArgs) {
+    args.push('--extractor-args', config.ytDlpPotProviderArgs);
+  }
+
+  if (config.ytDlpCookiesFile) {
+    args.push('--cookies', config.ytDlpCookiesFile);
+  }
+
+  return args;
+}
+
+function normalizeEntry(entry, fallbackQuery = '') {
+  const webpageUrl = entry.webpage_url || entry.original_url || entry.url || fallbackQuery;
+  return {
+    id: entry.id || webpageUrl,
+    title: entry.title || entry.fulltitle || fallbackQuery || 'Unknown title',
+    url: webpageUrl,
+    webpageUrl,
+    streamUrl: entry.url && /^https?:\/\//.test(entry.url) ? entry.url : null,
+    duration: Math.floor(entry.duration || 0),
+    uploader: entry.uploader || entry.channel || entry.artist || 'Unknown',
+    thumbnail: entry.thumbnail || null,
+    source: String(entry.extractor_key || entry.ie_key || 'youtube').toLowerCase(),
+    searchQuery: fallbackQuery,
+    preparedAt: null,
+    seekSeconds: 0
+  };
+}
+
+export class YTDlpService {
+  async resolve(query) {
+    const target = isUrl(query) ? query : `ytsearch1:${query}`;
+    const args = [
+      ...buildBaseArgs(),
+      '--dump-single-json',
+      '--playlist-end',
+      String(config.maxPlaylistTracks),
+      target
+    ];
+
+    try {
+      const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
+      const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+
+      if (Array.isArray(payload.entries) && payload.entries.length > 0) {
+        if (isPlaylistLike(query, payload)) {
+          const entries = payload.entries
+            .filter(Boolean)
+            .slice(0, config.maxPlaylistTracks)
+            .map((entry) => normalizeEntry(entry, entry.title || query));
+
+          return {
+            type: 'playlist',
+            playlistTitle: payload.title || 'Playlist',
+            tracks: entries
+          };
+        }
+
+        return {
+          type: 'single',
+          tracks: [normalizeEntry(payload.entries[0], query)]
+        };
+      }
+
+      return {
+        type: 'single',
+        tracks: [normalizeEntry(payload, query)]
+      };
+    } catch (error) {
+      const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      throw new Error(`yt-dlp resolve failed: ${detail.slice(0, 1000)}`);
+    }
+  }
+
+  async hydrate(track) {
+    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < 10 * 60 * 1000) {
+      return track;
+    }
+
+    const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+    const args = [
+      ...buildBaseArgs(),
+      '--dump-single-json',
+      '--no-playlist',
+      target
+    ];
+
+    try {
+      const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
+      const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+      const next = normalizeEntry(payload, track.searchQuery || track.title);
+
+      track.id = next.id;
+      track.title = next.title;
+      track.url = next.url;
+      track.webpageUrl = next.webpageUrl;
+      track.streamUrl = next.streamUrl;
+      track.duration = next.duration;
+      track.uploader = next.uploader;
+      track.thumbnail = next.thumbnail;
+      track.source = next.source;
+      track.preparedAt = Date.now();
+      return track;
+    } catch (error) {
+      const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      throw new Error(`yt-dlp hydrate failed: ${detail.slice(0, 1000)}`);
+    }
+  }
+}

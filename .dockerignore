@@ -2,3 +2,4 @@
 .env
 config
 bin
+node_modules
