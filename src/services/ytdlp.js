@@ -90,8 +90,20 @@ function extractStreamUrl(entry) {
     if (anyHttp.length > 0) return anyHttp[anyHttp.length - 1].url;
   }
   
+  // Fallback ke requested_formats jika yt-dlp menaruh format terbaik di sana
+  if (Array.isArray(entry.requested_formats) && entry.requested_formats.length > 0) {
+    const reqAudio = entry.requested_formats.find(f => f.url && /^https?:\/\//.test(f.url));
+    if (reqAudio) return reqAudio.url;
+  }
+
   // JANGAN fallback ke entry.url jika itu adalah halaman web (youtube.com, dll)
-  // Hanya balikkan URL jika sudah didefinisikan sebagai stream
+  // Hanya balikkan URL jika sudah didefinisikan sebagai raw stream
+  if (entry.url && /^https?:\/\//.test(entry.url)) {
+    if (entry.url !== entry.webpage_url && !entry.url.includes('youtube.com/watch')) {
+      return entry.url;
+    }
+  }
+
   return null;
 }
 
