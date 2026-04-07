@@ -460,9 +460,18 @@ export class GuildPlayer {
   async skip() {
     if (!this.current) throw new Error('Tidak ada lagu yang sedang diputar');
     this.consecutiveErrors = 0; // Reset counter jika skip manual
+    
+    // Pastikan lagu yang diskip masuk ke history agar Autoplay bisa merujuk ke lagu baru
+    this.handleTrackCompletion(this.current);
+
     this.playNonce += 1;
     this.current = null;
-    this.player.stop(true);
+    
+    // Jika player idle/buffering, stop() tidak men-trigger event Idle. Panggil playNext manual.
+    const stopped = this.player.stop(true);
+    if (!stopped) {
+      void this.playNext('skip');
+    }
   }
 
   async stop({ disconnect = false } = {}) {
