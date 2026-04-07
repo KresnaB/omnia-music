@@ -1,4 +1,4 @@
 .env
-config/
+/config/
 bin/
 omnia-music
