@@ -22,6 +22,7 @@ const client = new Client({
 const ytdlp = new YTDlpService();
 const lyrics = new LyricsService();
 const players = new PlayerManager({ client, ytdlp, lyrics });
+const AUTO_DELETE_MS = 5000;
 
 function helpEmbed() {
   return new EmbedBuilder()
@@ -88,6 +89,12 @@ function statusEmbed(player) {
   return new EmbedBuilder().setColor(0x2ecc71).setTitle('Player Status').setDescription(lines.join('\n'));
 }
 
+function scheduleInteractionDelete(interaction, delayMs = AUTO_DELETE_MS) {
+  setTimeout(() => {
+    interaction.deleteReply().catch(() => null);
+  }, delayMs);
+}
+
 client.once('clientReady', async () => {
   await registerCommands();
   console.log(`Omnia Music is online as ${client.user.tag}`);
@@ -127,14 +134,17 @@ client.on('interactionCreate', async (interaction) => {
         case 'skip':
           await player.skip();
           await interaction.reply({ content: 'Lagu dilewati.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'stop':
           await player.stop({ disconnect: true });
           await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'seek':
           await player.seek(interaction.options.getInteger('seconds', true));
           await interaction.reply({ content: 'Playback dipindahkan.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'queue':
           await interaction.reply({
@@ -145,12 +155,15 @@ client.on('interactionCreate', async (interaction) => {
         case 'loop':
           player.setLoopMode(interaction.options.getString('mode', true));
           await interaction.reply({ content: `Loop mode diubah ke \`${player.loopMode}\`.`, flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'shuffle':
           await interaction.reply({ content: `Queue diacak. Total: ${player.shuffle()}.`, flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'autoplay':
           await interaction.reply({ content: `Autoplay \`${player.toggleAutoplay()}\`.`, flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'help':
           await interaction.reply({ embeds: [helpEmbed()], flags: MessageFlags.Ephemeral });
@@ -158,6 +171,7 @@ client.on('interactionCreate', async (interaction) => {
         case 'move':
           player.move(interaction.options.getInteger('from', true), interaction.options.getInteger('to', true));
           await interaction.reply({ content: 'Queue diperbarui.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'status':
           await interaction.reply({ embeds: [statusEmbed(player)], flags: MessageFlags.Ephemeral });
@@ -188,6 +202,7 @@ client.on('interactionCreate', async (interaction) => {
         case 'reconnect':
           await player.reconnect(await resolveMember(interaction));
           await interaction.reply({ content: 'Voice connection disambungkan ulang.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
       }
     } catch (error) {
@@ -207,24 +222,30 @@ client.on('interactionCreate', async (interaction) => {
         case 'player:toggle': {
           const paused = player.togglePause();
           await interaction.reply({ content: paused ? 'Playback dijeda.' : 'Playback dilanjutkan.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         }
         case 'player:skip':
           await player.skip();
           await interaction.reply({ content: 'Lagu dilewati.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'player:stop':
           await player.stop({ disconnect: true });
           await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'player:shuffle':
           await interaction.reply({ content: `Queue diacak. Total: ${player.shuffle()}.`, flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'player:autoplay':
           await interaction.reply({ content: `Autoplay \`${player.toggleAutoplay()}\`.`, flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'player:loop':
           await interaction.reply({ content: `Loop mode diubah ke \`${player.nextLoopMode()}\`.`, flags: MessageFlags.Ephemeral });
+          scheduleInteractionDelete(interaction);
           break;
         case 'player:queue':
           await interaction.reply({
