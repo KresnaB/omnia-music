@@ -46,6 +46,7 @@ export class GuildPlayer {
     this.lyricMessages = [];
     this.consecutiveErrors = 0;
     this.skipRequested = false;
+    this.stopRequested = false;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -61,10 +62,14 @@ export class GuildPlayer {
 
       const finished = this.current;
       const wasSkipped = this.skipRequested;
+      const wasStopped = this.stopRequested;
       this.skipRequested = false;
+      this.stopRequested = false;
       if (finished) {
         this.consecutiveErrors = 0;
-        if (wasSkipped) {
+        if (wasStopped) {
+          finished.seekSeconds = 0;
+        } else if (wasSkipped) {
           finished.seekSeconds = 0;
           this.history.push(finished);
           if (this.history.length > 25) {
@@ -75,6 +80,10 @@ export class GuildPlayer {
         }
       }
       this.current = null;
+      if (wasStopped) {
+        this.resetIdleTimer();
+        return;
+      }
       void this.playNext('idle');
     });
 
@@ -483,8 +492,10 @@ export class GuildPlayer {
   async stop({ disconnect = false } = {}) {
     this.queue = [];
     this.current = null;
+    this.autoplay = false;
     this.consecutiveErrors = 0;
     this.playNonce += 1;
+    this.stopRequested = true;
     clearTimeout(this.sleepTimeout);
     this.sleepUntil = null;
     this.player.stop(true);
