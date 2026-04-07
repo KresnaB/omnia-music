@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
+  VoiceConnectionDisconnectReason,
   VoiceConnectionStatus,
   createAudioPlayer,
   createAudioResource,
@@ -116,6 +117,29 @@ export class GuildPlayer {
   async ensureVoice(voiceChannel) {
     let connection = getVoiceConnection(this.guildId);
 
+    if (connection) {
+      const state = connection.state.status;
+      // Jika dalam state Disconnected, coba reconnect dulu
+      if (state === VoiceConnectionStatus.Disconnected) {
+        const reason = connection.state.reason;
+        if (reason === VoiceConnectionDisconnectReason.WebSocketClose && connection.state.closeCode === 4014) {
+          // Kicked from channel — buat koneksi baru
+          connection.destroy();
+          connection = null;
+        } else {
+          try {
+            // Coba rejoin channel yang sama
+            await entersState(connection, VoiceConnectionStatus.Connecting, 5_000);
+          } catch {
+            connection.destroy();
+            connection = null;
+          }
+        }
+      } else if (state === VoiceConnectionStatus.Destroyed) {
+        connection = null;
+      }
+    }
+
     if (!connection) {
       connection = joinVoiceChannel({
         guildId: this.guildId,
@@ -126,16 +150,26 @@ export class GuildPlayer {
         daveEncryption: true
       });
       connection.subscribe(this.player);
+
+      // Log perubahan state untuk debugging DAVE handshake
+      connection.on('stateChange', (oldState, newState) => {
+        console.log(`[voice:${this.guildId}] ${oldState.status} → ${newState.status}`);
+      });
     }
 
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      // Timeout 30 detik — DAVE handshake membutuhkan lebih banyak waktu
+      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
     } catch (error) {
       connection.destroy();
+      const isAborted = error?.message === 'The operation was aborted';
       throw new Error(
-        `Voice connection gagal siap dalam 20 detik. ${error?.message === 'The operation was aborted' ? 'Kemungkinan handshake voice/DAVE belum berhasil.' : error.message}`
+        isAborted
+          ? 'Voice connection gagal siap dalam 30 detik. Handshake DAVE/E2EE belum selesai — coba lagi atau hubungi server Discord.'
+          : `Voice connection gagal: ${error.message}`
       );
     }
+
     this.resetIdleTimer();
     return connection;
   }
