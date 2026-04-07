@@ -153,8 +153,33 @@ function extractStreamUrl(entry) {
   return null;
 }
 
+function buildCanonicalWebpageUrl(entry, fallbackQuery = '') {
+  const candidates = [entry.webpage_url, entry.original_url, entry.url, fallbackQuery].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (/^https?:\/\//.test(candidate)) {
+      try {
+        const url = new URL(candidate);
+        if (url.hostname === 'music.youtube.com') {
+          url.hostname = 'www.youtube.com';
+        }
+        return url.toString();
+      } catch {
+        return candidate;
+      }
+    }
+  }
+
+  const extractor = String(entry.extractor_key || entry.ie_key || '').toLowerCase();
+  if ((extractor.includes('youtube') || extractor === 'youtube') && entry.id) {
+    return `https://www.youtube.com/watch?v=${entry.id}`;
+  }
+
+  return fallbackQuery;
+}
+
 function normalizeEntry(entry, fallbackQuery = '') {
-  const webpageUrl = entry.webpage_url || entry.original_url || entry.url || fallbackQuery;
+  const webpageUrl = buildCanonicalWebpageUrl(entry, fallbackQuery);
   const streamUrl = extractStreamUrl(entry);
   return {
     id: entry.id || webpageUrl,
