@@ -38,6 +38,7 @@ export class GuildPlayer {
     this.playNonce = 0;
     this.loopMode = 'off';
     this.autoplay = false;
+    this.shuffleActive = false;
     this.preloading = null;
     this.idleTimeout = null;
     this.sleepTimeout = null;
@@ -185,6 +186,7 @@ export class GuildPlayer {
   }
 
   insertUserTracks(tracks) {
+    this.shuffleActive = false;
     const firstAutoplayIndex = this.queue.findIndex((track) => track.requester?.id === 'autoplay');
     if (firstAutoplayIndex === -1) {
       this.queue.push(...tracks);
@@ -273,6 +275,9 @@ export class GuildPlayer {
     if (this.history.length > 25) {
       this.history = this.history.slice(-25);
     }
+    if (this.queue.length <= 1) {
+      this.shuffleActive = false;
+    }
   }
 
   addLyricMessage(msg) {
@@ -353,6 +358,7 @@ export class GuildPlayer {
 
         if (!existsInQueue && !existsInHistory && !isCurrent) {
           this.queue.push(prepared);
+          this.shuffleActive = false;
         }
       } catch (error) {
         console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
@@ -572,7 +578,7 @@ export class GuildPlayer {
         new ButtonBuilder().setCustomId('player:toggle').setLabel('Play/Pause').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('player:skip').setLabel('Skip').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('player:stop').setLabel('Stop').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('player:shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('player:shuffle').setLabel('Shuffle').setStyle(this.shuffleActive ? ButtonStyle.Success : ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('player:autoplay').setLabel('Autoplay').setStyle(this.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
@@ -604,6 +610,7 @@ export class GuildPlayer {
     this.current = null;
     this.currentMetrics = null;
     this.autoplay = false;
+    this.shuffleActive = false;
     this.consecutiveErrors = 0;
     this.playNonce += 1;
     this.stopRequested = true;
@@ -652,12 +659,14 @@ export class GuildPlayer {
       const j = Math.floor(Math.random() * (i + 1));
       [this.queue[i], this.queue[j]] = [this.queue[j], this.queue[i]];
     }
+    this.shuffleActive = this.queue.length > 1;
     void this.preloadNextTrack();
     void this.publishNowPlaying('queue-update');
     return this.queue.length;
   }
 
   move(from, to) {
+    this.shuffleActive = false;
     if (from < 1 || from > this.queue.length || to < 1 || to > this.queue.length) {
       throw new Error('Posisi queue tidak valid');
     }
