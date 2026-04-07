@@ -14,8 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     python3 \
-    python3-pip \
-  && pip3 install --no-cache-dir yt-dlp \
+    yt-dlp \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
