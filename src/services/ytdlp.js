@@ -61,6 +61,22 @@ function isPlaylistLike(query, result) {
   return /[?&]list=/.test(query) || /\/playlist\?/.test(query);
 }
 
+function extractVideoIdFromUrl(input) {
+  try {
+    const url = new URL(input);
+    if (url.searchParams.get('v')) {
+      return url.searchParams.get('v');
+    }
+    const shortsMatch = url.pathname.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
+    if (shortsMatch) {
+      return shortsMatch[1];
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function buildBaseArgs() {
   const args = [
     '--default-search',
@@ -199,6 +215,25 @@ function normalizeEntry(entry, fallbackQuery = '') {
   };
 }
 
+function buildFastTrack(url) {
+  const videoId = extractVideoIdFromUrl(url);
+  return {
+    id: videoId || url,
+    title: url,
+    url,
+    webpageUrl: url,
+    streamUrl: null,
+    duration: 0,
+    uploader: 'Loading...',
+    thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null,
+    source: 'youtube',
+    searchQuery: url,
+    preparedAt: null,
+    seekSeconds: 0,
+    metadataPending: true
+  };
+}
+
 export class YTDlpService {
   async resolve(query) {
     const normalizedQuery = normalizeQuery(query);
@@ -207,6 +242,24 @@ export class YTDlpService {
 
     const isPlaylist = isUrl(normalizedQuery) && (/[?&]list=/.test(normalizedQuery) || /\/playlist\?/.test(normalizedQuery) || /[?&]start_radio=/.test(normalizedQuery));
     const target = isUrl(normalizedQuery) ? normalizedQuery : `ytsearch1:${normalizedQuery}`;
+
+    if (isUrl(normalizedQuery) && !isPlaylist) {
+      try {
+        const streamUrl = await fetchStreamUrl(target);
+        const track = buildFastTrack(normalizedQuery);
+        track.streamUrl = streamUrl;
+        track.preparedAt = Date.now();
+
+        const resultPayload = {
+          type: 'single',
+          tracks: [track]
+        };
+        setCache(normalizedQuery, resultPayload, 5 * 60 * 1000);
+        return resultPayload;
+      } catch (error) {
+        // Fallback ke jalur lama bila direct stream cepat gagal.
+      }
+    }
 
     const args = [
       ...buildBaseArgs(),
@@ -290,10 +343,47 @@ export class YTDlpService {
       track.thumbnail = next.thumbnail;
       track.source = next.source;
       track.preparedAt = Date.now();
+      track.metadataPending = false;
       return track;
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       throw new Error(`yt-dlp hydrate failed: ${detail.slice(0, 1000)}`);
+    }
+  }
+
+  async hydrateMetadata(track) {
+    const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+    const args = [
+      ...buildBaseArgs(),
+      '-f',
+      'bestaudio/best',
+      '--dump-single-json',
+      '--no-playlist',
+      target
+    ];
+
+    try {
+      const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
+      const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+      const next = normalizeEntry(payload, track.searchQuery || track.title);
+
+      track.id = next.id;
+      track.title = next.title;
+      track.url = next.url;
+      track.webpageUrl = next.webpageUrl;
+      track.duration = next.duration;
+      track.uploader = next.uploader;
+      track.thumbnail = next.thumbnail;
+      track.source = next.source;
+      track.metadataPending = false;
+      if (!track.streamUrl && next.streamUrl) {
+        track.streamUrl = next.streamUrl;
+        track.preparedAt = Date.now();
+      }
+      return track;
+    } catch (error) {
+      const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      throw new Error(`yt-dlp metadata failed: ${detail.slice(0, 1000)}`);
     }
   }
 }

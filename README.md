@@ -9,6 +9,7 @@ Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, sia
 - Playlist URL otomatis dimasukkan ke queue dengan batas maksimum 100 lagu pertama
 - Link `music.youtube.com` akan dinormalisasi otomatis ke URL YouTube standar sebelum di-resolve
 - Preprocessing lagu berikutnya di background untuk queue dan autoplay agar perpindahan track lebih seamless
+- Link single video diprioritaskan lewat jalur cepat direct stream URL, metadata menyusul di background
 - First play memakai deferred interaction agar tidak timeout saat resolve awal
 - Lyrics dari LRCLIB
 - `yt-dlp` + POT provider `bgutil-pot`
@@ -132,6 +133,12 @@ Cek service provider:
 
 ```bash
 docker compose logs --tail=100 bgutil-pot
+```
+
+Log server juga akan menulis timing proses per lagu dengan format seperti:
+
+```text
+[timing:GUILD_ID] "judul lagu" request_to_playing=2400ms queue_wait=120ms hydrate=300ms pipeline=850ms
 ```
 
 ## Catatan

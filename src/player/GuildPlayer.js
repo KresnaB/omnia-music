@@ -49,10 +49,33 @@ export class GuildPlayer {
     this.stopRequested = false;
     this.autoplayPreparePromise = null;
     this.autoplaySeedId = null;
+    this.currentMetrics = null;
 
     this.player = createAudioPlayer({
       behaviors: {
         noSubscriber: NoSubscriberBehavior.Pause
+      }
+    });
+
+    this.player.on(AudioPlayerStatus.Playing, async () => {
+      if (this.currentMetrics?.logged || !this.current) {
+        return;
+      }
+
+      this.currentMetrics.logged = true;
+      const now = Date.now();
+      const metrics = this.currentMetrics;
+      console.log(
+        `[timing:${this.guildId}] "${truncate(this.current.title, 80)}" request_to_playing=${now - metrics.requestStartedAt}ms queue_wait=${metrics.playNextStartedAt - metrics.requestStartedAt}ms hydrate=${metrics.hydrateMs}ms pipeline=${metrics.pipelineMs}ms`
+      );
+
+      if (this.current.metadataPending) {
+        try {
+          await this.ytdlp.hydrateMetadata(this.current);
+          await this.publishNowPlaying('metadata');
+        } catch (error) {
+          console.warn(`[player:${this.guildId}] metadata refresh failed:`, error.message);
+        }
       }
     });
 
@@ -137,7 +160,8 @@ export class GuildPlayer {
       ...track,
       requester,
       addedAt: Date.now(),
-      originalQuery: query
+      originalQuery: query,
+      requestStartedAt: Date.now()
     }));
 
     if (resolved.type === 'playlist' && tracks[0]) {
@@ -361,10 +385,24 @@ export class GuildPlayer {
 
     this.playNonce += 1;
     const nonce = this.playNonce;
+    const metrics = {
+      requestStartedAt: next.requestStartedAt || next.addedAt || Date.now(),
+      playNextStartedAt: Date.now(),
+      hydrateMs: 0,
+      pipelineMs: 0,
+      logged: false
+    };
 
     try {
-      await this.ytdlp.hydrate(next);
+      const hydrateStartedAt = Date.now();
+      if (!next.metadataPending) {
+        await this.ytdlp.hydrate(next);
+      }
+      metrics.hydrateMs = Date.now() - hydrateStartedAt;
+
+      const pipelineStartedAt = Date.now();
       const prepared = await this.createAudioPipeline(next);
+      metrics.pipelineMs = Date.now() - pipelineStartedAt;
 
       if (nonce !== this.playNonce) {
         prepared.process.kill('SIGKILL');
@@ -377,6 +415,7 @@ export class GuildPlayer {
 
       this.clearLyricMessages();
       this.currentProcess = prepared.process;
+      this.currentMetrics = metrics;
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
       void this.preloadNextTrack();
@@ -550,6 +589,7 @@ export class GuildPlayer {
   async stop({ disconnect = false } = {}) {
     this.queue = [];
     this.current = null;
+    this.currentMetrics = null;
     this.autoplay = false;
     this.consecutiveErrors = 0;
     this.playNonce += 1;
