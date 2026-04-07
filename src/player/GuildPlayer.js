@@ -315,6 +315,7 @@ export class GuildPlayer {
 
     if (this.queue.length > 0) {
       await this.preloadNextTrack();
+      return;
     }
 
     const hasAutoplayQueued = this.queue.some((track) => track.requester?.id === 'autoplay');
@@ -431,7 +432,9 @@ export class GuildPlayer {
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
       void this.preloadNextTrack();
-      void this.prepareAutoplayTrack();
+      if (this.autoplay && this.queue.length === 0) {
+        void this.prepareAutoplayTrack();
+      }
     } catch (error) {
       console.error(`[player:${this.guildId}] playNext failed:`, error.message);
       this.consecutiveErrors++;
@@ -695,7 +698,7 @@ export class GuildPlayer {
 
   toggleAutoplay() {
     this.autoplay = !this.autoplay;
-    if (this.autoplay) {
+    if (this.autoplay && this.queue.length === 0) {
       void this.prepareAutoplayTrack();
     } else {
       this.autoplayPreparePromise = null;
