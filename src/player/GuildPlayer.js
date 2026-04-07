@@ -293,27 +293,19 @@ export class GuildPlayer {
   }
 
   async preloadUpcomingTracks() {
-    const targets = this.queue.slice(0, Math.max(1, config.preloadWindow));
-    if (targets.length === 0) {
+    const nextTrack = this.queue[0];
+    if (!nextTrack?.id || this.preloadInFlight.has(nextTrack.id)) {
       return;
     }
 
-    await Promise.all(
-      targets.map(async (track) => {
-        if (!track?.id || this.preloadInFlight.has(track.id)) {
-          return;
-        }
-
-        this.preloadInFlight.add(track.id);
-        try {
-          await this.ytdlp.hydrate(track);
-        } catch (error) {
-          console.warn(`[player:${this.guildId}] preload failed for ${track.title}:`, error.message);
-        } finally {
-          this.preloadInFlight.delete(track.id);
-        }
-      })
-    );
+    this.preloadInFlight.add(nextTrack.id);
+    try {
+      await this.ytdlp.ensureStreamUrl(nextTrack);
+    } catch (error) {
+      console.warn(`[player:${this.guildId}] preload failed for ${nextTrack.title}:`, error.message);
+    } finally {
+      this.preloadInFlight.delete(nextTrack.id);
+    }
   }
 
   async prepareAutoplayTrack() {
@@ -417,9 +409,7 @@ export class GuildPlayer {
 
     try {
       const hydrateStartedAt = Date.now();
-      if (!next.metadataPending) {
-        await this.ytdlp.hydrate(next);
-      }
+      await this.ytdlp.ensureStreamUrl(next);
       metrics.hydrateMs = Date.now() - hydrateStartedAt;
 
       const pipelineStartedAt = Date.now();

@@ -8,7 +8,7 @@ Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, sia
 - Embed now playing dengan tombol play/pause, skip, stop, shuffle, autoplay, loop, queue, dan lyrics
 - Playlist URL otomatis dimasukkan ke queue dengan batas maksimum 100 lagu pertama
 - Link `music.youtube.com` akan dinormalisasi otomatis ke URL YouTube standar sebelum di-resolve
-- Preprocessing lagu berikutnya di background untuk queue dan autoplay agar perpindahan track lebih seamless
+- Preprocessing tetap 1 lagu berikutnya di background agar transisi lebih cepat tanpa membebani server
 - Link single video diprioritaskan lewat jalur cepat direct stream URL, metadata menyusul di background
 - First play memakai deferred interaction agar tidak timeout saat resolve awal
 - Lyrics dari LRCLIB
@@ -100,7 +100,6 @@ LRCLIB_BASE_URL=https://lrclib.net
 DEFAULT_VOLUME=100
 DEFAULT_IDLE_TIMEOUT_MS=600000
 DEFAULT_SEARCH_PLATFORM=youtube
-PRELOAD_WINDOW=3
 ```
 
 Jika tidak memakai cookies:

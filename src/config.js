@@ -20,8 +20,7 @@ export const config = {
   defaultVolume: toInt(process.env.DEFAULT_VOLUME, 100),
   defaultIdleTimeoutMs: toInt(process.env.DEFAULT_IDLE_TIMEOUT_MS, 10 * 60 * 1000),
   defaultSearchPlatform: process.env.DEFAULT_SEARCH_PLATFORM || 'youtube',
-  maxPlaylistTracks: 100,
-  preloadWindow: toInt(process.env.PRELOAD_WINDOW, 3)
+  maxPlaylistTracks: 100
 };
 
 export function validateConfig() {

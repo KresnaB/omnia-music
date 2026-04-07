@@ -209,9 +209,9 @@ function normalizeEntry(entry, fallbackQuery = '') {
     thumbnail: entry.thumbnail || null,
     source: String(entry.extractor_key || entry.ie_key || 'youtube').toLowerCase(),
     searchQuery: fallbackQuery,
-    // Tandai sudah dihydrate jika streamUrl langsung tersedia
     preparedAt: streamUrl ? Date.now() : null,
-    seekSeconds: 0
+    seekSeconds: 0,
+    metadataPending: !streamUrl || !entry.duration || !entry.thumbnail || !entry.uploader
   };
 }
 
@@ -348,6 +348,23 @@ export class YTDlpService {
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       throw new Error(`yt-dlp hydrate failed: ${detail.slice(0, 1000)}`);
+    }
+  }
+
+  async ensureStreamUrl(track) {
+    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < 10 * 60 * 1000) {
+      return track;
+    }
+
+    const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+
+    try {
+      track.streamUrl = await fetchStreamUrl(target);
+      track.preparedAt = Date.now();
+      return track;
+    } catch (error) {
+      const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      throw new Error(`yt-dlp stream failed: ${detail.slice(0, 1000)}`);
     }
   }
 
