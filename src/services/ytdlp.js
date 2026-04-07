@@ -48,32 +48,58 @@ function buildBaseArgs() {
   return args;
 }
 
+function extractStreamUrl(entry) {
+  // Coba cari format audio terbaik dari field `formats`
+  if (Array.isArray(entry.formats) && entry.formats.length > 0) {
+    // Prioritas: format audio-only dengan extension webm/ogg/m4a
+    const audioOnly = entry.formats.filter(
+      (f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url)
+    );
+    if (audioOnly.length > 0) {
+      // Pilih bitrate tertinggi
+      audioOnly.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
+      return audioOnly[0].url;
+    }
+    // Fallback: format apapun yang ada URL http
+    const anyHttp = entry.formats.filter((f) => f.url && /^https?:\/\//.test(f.url));
+    if (anyHttp.length > 0) return anyHttp[anyHttp.length - 1].url;
+  }
+  // Fallback ke entry.url langsung
+  return entry.url && /^https?:\/\//.test(entry.url) ? entry.url : null;
+}
+
 function normalizeEntry(entry, fallbackQuery = '') {
   const webpageUrl = entry.webpage_url || entry.original_url || entry.url || fallbackQuery;
+  const streamUrl = extractStreamUrl(entry);
   return {
     id: entry.id || webpageUrl,
     title: entry.title || entry.fulltitle || fallbackQuery || 'Unknown title',
     url: webpageUrl,
     webpageUrl,
-    streamUrl: entry.url && /^https?:\/\//.test(entry.url) ? entry.url : null,
+    streamUrl,
     duration: Math.floor(entry.duration || 0),
     uploader: entry.uploader || entry.channel || entry.artist || 'Unknown',
     thumbnail: entry.thumbnail || null,
     source: String(entry.extractor_key || entry.ie_key || 'youtube').toLowerCase(),
     searchQuery: fallbackQuery,
-    preparedAt: null,
+    // Tandai sudah dihydrate jika streamUrl langsung tersedia
+    preparedAt: streamUrl ? Date.now() : null,
     seekSeconds: 0
   };
 }
 
 export class YTDlpService {
   async resolve(query) {
+    const isPlaylist = isUrl(query) && (/[?&]list=/.test(query) || /\/playlist\?/.test(query));
     const target = isUrl(query) ? query : `ytsearch1:${query}`;
+
     const args = [
       ...buildBaseArgs(),
       '--dump-single-json',
       '--playlist-end',
       String(config.maxPlaylistTracks),
+      // Untuk single track, minta format audio sekaligus agar streamUrl langsung tersedia
+      ...(!isPlaylist ? ['-f', 'bestaudio/best'] : []),
       target
     ];
 

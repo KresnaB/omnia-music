@@ -92,8 +92,11 @@ export class GuildPlayer {
       throw new Error('Kamu harus berada di voice channel terlebih dahulu');
     }
 
-    await this.ensureVoice(voiceChannel);
-    const resolved = await this.ytdlp.resolve(query);
+    // Jalankan join voice + resolve metadata secara paralel (hemat 2-4 detik)
+    const [, resolved] = await Promise.all([
+      this.ensureVoice(voiceChannel),
+      this.ytdlp.resolve(query)
+    ]);
     const requester = { id: member.id, name: member.displayName };
 
     const tracks = resolved.tracks.map((track) => ({
