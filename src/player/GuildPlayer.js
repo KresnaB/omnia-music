@@ -346,6 +346,8 @@ export class GuildPlayer {
       '-vn',
       '-sn',
       '-dn',
+      '-map',
+      'a?',
       '-c:a',
       'libopus',
       '-b:a',
@@ -368,8 +370,9 @@ export class GuildPlayer {
       stderr += chunk.toString();
     });
 
-    const resource = createAudioResource(process.stdout, {
-      inputType: StreamType.OggOpus,
+    const probed = await demuxProbe(process.stdout);
+    const resource = createAudioResource(probed.stream, {
+      inputType: probed.type,
       metadata: track
     });
 
