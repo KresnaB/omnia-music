@@ -45,6 +45,7 @@ export class GuildPlayer {
     this.lastTextChannelId = null;
     this.lyricMessages = [];
     this.consecutiveErrors = 0;
+    this.skipRequested = false;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -59,10 +60,21 @@ export class GuildPlayer {
       }
 
       const finished = this.current;
+      const wasSkipped = this.skipRequested;
+      this.skipRequested = false;
       if (finished) {
         this.consecutiveErrors = 0;
-        this.handleTrackCompletion(finished);
+        if (wasSkipped) {
+          finished.seekSeconds = 0;
+          this.history.push(finished);
+          if (this.history.length > 25) {
+            this.history = this.history.slice(-25);
+          }
+        } else {
+          this.handleTrackCompletion(finished);
+        }
       }
+      this.current = null;
       void this.playNext('idle');
     });
 
@@ -463,18 +475,9 @@ export class GuildPlayer {
   async skip() {
     if (!this.current) throw new Error('Tidak ada lagu yang sedang diputar');
     this.consecutiveErrors = 0; // Reset counter jika skip manual
-    
-    // Pastikan lagu yang diskip masuk ke history agar Autoplay bisa merujuk ke lagu baru
-    this.handleTrackCompletion(this.current);
-
+    this.skipRequested = true;
     this.playNonce += 1;
-    this.current = null;
-    
-    // Jika player idle/buffering, stop() tidak men-trigger event Idle. Panggil playNext manual.
-    const stopped = this.player.stop(true);
-    if (!stopped) {
-      void this.playNext('skip');
-    }
+    this.player.stop(true);
   }
 
   async stop({ disconnect = false } = {}) {
