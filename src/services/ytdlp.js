@@ -4,6 +4,27 @@ import { config } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
+const resolveCache = new Map();
+
+function getCache(key) {
+  const item = resolveCache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expires) {
+    resolveCache.delete(key);
+    return null;
+  }
+  // Deep clone to prevent accidental queue modification affecting memory cache
+  return JSON.parse(JSON.stringify(item.data));
+}
+
+function setCache(key, data, ttlMs = 15 * 60 * 1000) { // 15 mins cache
+  if (resolveCache.size > 200) {
+    const oldest = resolveCache.keys().next().value;
+    resolveCache.delete(oldest);
+  }
+  resolveCache.set(key, { data: JSON.parse(JSON.stringify(data)), expires: Date.now() + ttlMs });
+}
+
 function parseJsonBlob(output) {
   const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -90,6 +111,9 @@ function normalizeEntry(entry, fallbackQuery = '') {
 
 export class YTDlpService {
   async resolve(query) {
+    const cached = getCache(query);
+    if (cached) return cached;
+
     const isPlaylist = isUrl(query) && (/[?&]list=/.test(query) || /\/playlist\?/.test(query));
     const target = isUrl(query) ? query : `ytsearch1:${query}`;
 
@@ -98,8 +122,9 @@ export class YTDlpService {
       '--dump-single-json',
       '--playlist-end',
       String(config.maxPlaylistTracks),
-      // Untuk single track, minta format audio sekaligus agar streamUrl langsung tersedia
-      ...(!isPlaylist ? ['-f', 'bestaudio/best'] : []),
+      // Minta format stream sekaligus jika single track
+      // Gunakan --flat-playlist agar ekstraksi 100 list instan dan bypass ekstraksi stream (akan diambil saat play nanti pakai hydrate)
+      ...(isPlaylist ? ['--flat-playlist'] : ['-f', 'bestaudio/best']),
       target
     ];
 
@@ -114,23 +139,29 @@ export class YTDlpService {
             .slice(0, config.maxPlaylistTracks)
             .map((entry) => normalizeEntry(entry, entry.title || query));
 
-          return {
+          const resultPayload = {
             type: 'playlist',
             playlistTitle: payload.title || 'Playlist',
             tracks: entries
           };
+          setCache(query, resultPayload);
+          return resultPayload;
         }
 
-        return {
+        const resultPayload = {
           type: 'single',
           tracks: [normalizeEntry(payload.entries[0], query)]
         };
+        setCache(query, resultPayload);
+        return resultPayload;
       }
 
-      return {
+      const resultPayload = {
         type: 'single',
         tracks: [normalizeEntry(payload, query)]
       };
+      setCache(query, resultPayload);
+      return resultPayload;
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       throw new Error(`yt-dlp resolve failed: ${detail.slice(0, 1000)}`);

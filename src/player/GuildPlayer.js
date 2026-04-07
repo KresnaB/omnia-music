@@ -4,9 +4,9 @@ import {
   NoSubscriberBehavior,
   VoiceConnectionDisconnectReason,
   VoiceConnectionStatus,
+  StreamType,
   createAudioPlayer,
   createAudioResource,
-  demuxProbe,
   entersState,
   getVoiceConnection,
   joinVoiceChannel
@@ -307,9 +307,8 @@ export class GuildPlayer {
       stderr += chunk.toString();
     });
 
-    const probed = await demuxProbe(process.stdout);
-    const resource = createAudioResource(probed.stream, {
-      inputType: probed.type,
+    const resource = createAudioResource(process.stdout, {
+      inputType: StreamType.OggOpus,
       metadata: track
     });
 

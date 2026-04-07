@@ -102,6 +102,8 @@ client.on('interactionCreate', async (interaction) => {
         case 'play': {
           await interaction.deferReply();
           const query = interaction.options.getString('query', true);
+          await interaction.editReply({ content: `🔍 Sedang mencari **${truncate(query, 50)}**...` });
+
           const member = await resolveMember(interaction);
           const result = await player.enqueue({
             member,
@@ -116,6 +118,10 @@ client.on('interactionCreate', async (interaction) => {
           } else {
             await interaction.editReply({ content: `Menambahkan **${truncate(result.tracks[0].title, 120)}** ke queue.` });
           }
+          
+          setTimeout(() => {
+            interaction.deleteReply().catch(() => null);
+          }, 5000);
           break;
         }
         case 'skip':
