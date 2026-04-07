@@ -88,7 +88,7 @@ function statusEmbed(player) {
   return new EmbedBuilder().setColor(0x2ecc71).setTitle('Player Status').setDescription(lines.join('\n'));
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   await registerCommands();
   console.log(`Omnia Music is online as ${client.user.tag}`);
 });

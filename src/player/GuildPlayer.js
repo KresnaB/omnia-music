@@ -128,7 +128,14 @@ export class GuildPlayer {
       connection.subscribe(this.player);
     }
 
-    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    try {
+      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    } catch (error) {
+      connection.destroy();
+      throw new Error(
+        `Voice connection gagal siap dalam 20 detik. ${error?.message === 'The operation was aborted' ? 'Kemungkinan handshake voice/DAVE belum berhasil.' : error.message}`
+      );
+    }
     this.resetIdleTimer();
     return connection;
   }
