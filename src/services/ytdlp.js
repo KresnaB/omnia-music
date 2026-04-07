@@ -84,6 +84,32 @@ function buildBaseArgs() {
   return args;
 }
 
+async function fetchStreamUrl(target) {
+  const args = [
+    ...buildBaseArgs(),
+    '--get-url',
+    '--no-playlist',
+    '-f',
+    'bestaudio/best',
+    target
+  ];
+
+  const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, {
+    maxBuffer: 16 * 1024 * 1024
+  });
+
+  const lines = `${stdout}\n${stderr}`
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^https?:\/\//.test(line));
+
+  if (lines.length === 0) {
+    throw new Error('yt-dlp tidak mengembalikan direct stream URL');
+  }
+
+  return lines[0];
+}
+
 function extractStreamUrl(entry) {
   if (entry._type === 'url' || entry._type === 'url_transparent') {
     return null;
@@ -226,12 +252,13 @@ export class YTDlpService {
       const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
       const payload = parseJsonBlob(`${stdout}\n${stderr}`);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
+      const streamUrl = await fetchStreamUrl(target);
 
       track.id = next.id;
       track.title = next.title;
       track.url = next.url;
       track.webpageUrl = next.webpageUrl;
-      track.streamUrl = next.streamUrl;
+      track.streamUrl = streamUrl || next.streamUrl;
       track.duration = next.duration;
       track.uploader = next.uploader;
       track.thumbnail = next.thumbnail;

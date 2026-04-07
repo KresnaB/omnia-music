@@ -332,7 +332,7 @@ export class GuildPlayer {
 
   async createAudioPipeline(track) {
     if (!track.streamUrl) {
-      throw new Error(`Gagal mendapatkan stream audio untuk "${truncate(track.title, 50)}". Silakan coba lagi atau cari judul manual.`);
+      throw new Error(`Gagal mendapatkan direct stream audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`);
     }
 
     const args = [
