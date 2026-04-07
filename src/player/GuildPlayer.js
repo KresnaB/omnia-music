@@ -173,6 +173,7 @@ export class GuildPlayer {
     }
 
     this.insertUserTracks(tracks);
+    void this.publishNowPlaying('queue-update');
 
     if (!this.current) {
       void this.playNext('enqueue');
@@ -640,6 +641,7 @@ export class GuildPlayer {
       [this.queue[i], this.queue[j]] = [this.queue[j], this.queue[i]];
     }
     void this.preloadNextTrack();
+    void this.publishNowPlaying('queue-update');
     return this.queue.length;
   }
 
@@ -651,6 +653,7 @@ export class GuildPlayer {
     const [track] = this.queue.splice(from - 1, 1);
     this.queue.splice(to - 1, 0, track);
     void this.preloadNextTrack();
+    void this.publishNowPlaying('queue-update');
   }
 
   setLoopMode(mode) {
