@@ -44,6 +44,7 @@ export class GuildPlayer {
     this.sleepUntil = null;
     this.lastTextChannelId = null;
     this.lyricMessages = [];
+    this.consecutiveErrors = 0;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -59,9 +60,10 @@ export class GuildPlayer {
 
       const finished = this.current;
       if (finished) {
+        this.consecutiveErrors = 0;
         this.handleTrackCompletion(finished);
       }
-      await this.playNext('idle');
+      void this.playNext('idle');
     });
 
     this.player.on('error', async (error) => {
@@ -70,8 +72,15 @@ export class GuildPlayer {
         this.currentProcess.kill('SIGKILL');
         this.currentProcess = null;
       }
-      await this.sendStatusMessage(`Playback error: ${error.message}`);
-      await this.playNext('error');
+      
+      this.consecutiveErrors++;
+      if (this.consecutiveErrors < 3) {
+        await this.sendStatusMessage(`Playback error: ${error.message}. Mencoba lagu berikutnya...`);
+        void this.playNext('error');
+      } else {
+        await this.sendStatusMessage(`Terlalu banyak error berturut-turut. Playback dihentikan.`);
+        await this.stop();
+      }
     });
   }
 
@@ -240,10 +249,8 @@ export class GuildPlayer {
       try {
         let query;
         if (last.source === 'youtube' && last.id && last.id.length === 11) {
-          // Manfaatkan algoritma Auto Mix YouTube
           query = `https://www.youtube.com/watch?v=${last.id}&list=RD${last.id}`;
         } else {
-          // Generic search for related artist
           query = `ytsearch5:${last.uploader || last.title} best hits audio`;
         }
 
@@ -277,22 +284,38 @@ export class GuildPlayer {
     this.playNonce += 1;
     const nonce = this.playNonce;
 
-    await this.ytdlp.hydrate(next);
-    const prepared = await this.createAudioPipeline(next);
-    if (nonce !== this.playNonce) {
-      prepared.process.kill('SIGKILL');
-      return;
-    }
+    try {
+      await this.ytdlp.hydrate(next);
+      const prepared = await this.createAudioPipeline(next);
 
-    if (this.currentProcess) {
-      this.currentProcess.kill('SIGKILL');
-    }
+      if (nonce !== this.playNonce) {
+        prepared.process.kill('SIGKILL');
+        return;
+      }
 
-    this.clearLyricMessages();
-    this.currentProcess = prepared.process;
-    this.player.play(prepared.resource);
-    await this.publishNowPlaying(reason);
-    void this.preloadNextTrack();
+      if (this.currentProcess) {
+        this.currentProcess.kill('SIGKILL');
+      }
+
+      this.clearLyricMessages();
+      this.currentProcess = prepared.process;
+      this.player.play(prepared.resource);
+      await this.publishNowPlaying(reason);
+      void this.preloadNextTrack();
+    } catch (error) {
+      console.error(`[player:${this.guildId}] playNext failed:`, error.message);
+      this.consecutiveErrors++;
+
+      if (this.consecutiveErrors < 3) {
+        await this.sendStatusMessage(`Gagal memutar "${next.title}": ${error.message}. Melewati...`);
+        // Tunggu sebentar sebelum skip otomatis untuk menghindari spam API gila-gilaan
+        await new Promise(r => setTimeout(r, 1500));
+        return this.playNext('fallback');
+      } else {
+        await this.sendStatusMessage(`❌ Terjadi kesalahan berulang (${this.consecutiveErrors}x). Menghentikan playback.`);
+        await this.stop();
+      }
+    }
   }
 
   async createAudioPipeline(track) {
@@ -305,6 +328,10 @@ export class GuildPlayer {
       '-hide_banner',
       '-loglevel',
       'error',
+      '-probesize',
+      '32M',
+      '-analyzeduration',
+      '15M',
       ...(track.seekSeconds > 0 ? ['-ss', String(track.seekSeconds)] : []),
       '-reconnect',
       '1',
@@ -314,21 +341,19 @@ export class GuildPlayer {
       '5',
       '-i',
       track.streamUrl,
+      '-reconnect_at_eof',
+      '1',
       '-vn',
       '-sn',
       '-dn',
-      '-map',
-      'a?',
       '-c:a',
-      'libopus',
-      '-b:a',
-      '128k',
+      'pcm_s16le',
       '-ar',
       '48000',
       '-ac',
       '2',
       '-f',
-      'ogg',
+      's16le',
       'pipe:1'
     ];
 
@@ -341,9 +366,8 @@ export class GuildPlayer {
       stderr += chunk.toString();
     });
 
-    const probed = await demuxProbe(process.stdout);
-    const resource = createAudioResource(probed.stream, {
-      inputType: probed.type,
+    const resource = createAudioResource(process.stdout, {
+      inputType: StreamType.Raw,
       metadata: track
     });
 
@@ -433,6 +457,7 @@ export class GuildPlayer {
 
   async skip() {
     if (!this.current) throw new Error('Tidak ada lagu yang sedang diputar');
+    this.consecutiveErrors = 0; // Reset counter jika skip manual
     this.playNonce += 1;
     this.current = null;
     this.player.stop(true);
@@ -441,6 +466,7 @@ export class GuildPlayer {
   async stop({ disconnect = false } = {}) {
     this.queue = [];
     this.current = null;
+    this.consecutiveErrors = 0;
     this.playNonce += 1;
     clearTimeout(this.sleepTimeout);
     this.sleepUntil = null;

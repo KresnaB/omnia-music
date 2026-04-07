@@ -99,6 +99,11 @@ function extractStreamUrl(entry) {
   // JANGAN fallback ke entry.url jika itu adalah halaman web (youtube.com, dll)
   // Hanya balikkan URL jika sudah didefinisikan sebagai raw stream
   if (entry.url && /^https?:\/\//.test(entry.url)) {
+    // Jika URL mengandung googlevideo, maka ini sudah dipastikan stream
+    if (entry.url.includes('googlevideo.com')) {
+      return entry.url;
+    }
+    // Fallback lama jika formatnya berbeda tapi bukan halaman nonton standar
     if (entry.url !== entry.webpage_url && !entry.url.includes('youtube.com/watch')) {
       return entry.url;
     }
