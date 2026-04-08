@@ -723,11 +723,29 @@ export class GuildPlayer {
   }
 
   async skip() {
-    if (!this.current) throw new Error('Tidak ada lagu yang sedang diputar');
+    if (!this.current && !this.playNextPromise) {
+      throw new Error('Tidak ada lagu yang sedang diputar');
+    }
+
     this.consecutiveErrors = 0; // Reset counter jika skip manual
     this.skipRequested = true;
     this.playNonce += 1;
-    this.player.stop(true);
+
+    if (this.player.state.status === AudioPlayerStatus.Idle) {
+      if (this.current) {
+        const finished = this.current;
+        finished.seekSeconds = 0;
+        this.history.push(finished);
+        if (this.history.length > 25) {
+          this.history = this.history.slice(-25);
+        }
+      }
+      this.current = null;
+      this.skipRequested = false;
+      void this.queuePlayNext('skip');
+    } else {
+      this.player.stop(true);
+    }
   }
 
   async stop({ disconnect = false } = {}) {
