@@ -191,13 +191,14 @@ export class GuildPlayer {
 
   insertUserTracks(tracks) {
     this.shuffleActive = false;
-    const firstAutoplayIndex = this.queue.findIndex((track) => track.requester?.id === 'autoplay');
-    if (firstAutoplayIndex === -1) {
-      this.queue.push(...tracks);
-      return;
-    }
+    
+    // Hapus lagu autoplay lama yang sudah mengantre
+    this.queue = this.queue.filter((track) => track.requester?.id !== 'autoplay');
+    
+    // Batalkan/reset referensi background promise autoplay lama jika ada
+    this.autoplaySeedId = null;
 
-    this.queue.splice(firstAutoplayIndex, 0, ...tracks);
+    this.queue.push(...tracks);
   }
 
   async ensureVoice(voiceChannel) {
@@ -431,6 +432,11 @@ export class GuildPlayer {
 
         await this.ytdlp.hydrate(prepared);
 
+        // Abaikan push jika referensi seed sudah di-reset oleh enqueue manual user
+        if (this.autoplaySeedId !== seed.id) {
+          return;
+        }
+
         const existsInQueue = this.queue.some((track) => track.id === prepared.id);
         const existsInHistory = this.history.some((track) => track.id === prepared.id);
         const isCurrent = this.current?.id === prepared.id;
@@ -443,7 +449,9 @@ export class GuildPlayer {
       } catch (error) {
         console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
       } finally {
-        this.autoplayPreparePromise = null;
+        if (this.autoplaySeedId === seed.id || this.autoplaySeedId === null) {
+          this.autoplayPreparePromise = null;
+        }
       }
     })();
 
@@ -671,45 +679,37 @@ export class GuildPlayer {
     const status = this.status();
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('Now Playing')
+      .setAuthor({ name: 'Now Playing' })
+      .setTitle(truncate(this.current.title, 256) || 'Unknown')
       .setDescription([
-        `Durasi: \`${formatDuration(this.current.duration)}\``,
-        `Requester: <@${this.current.requester?.id || this.client.user.id}>`,
-        `Loop: \`${status.loopMode}\``,
-        `Autoplay: \`${status.autoplay}\``
+        `👤 **Uploader:** ${truncate(this.current.uploader || 'Unknown', 50)}`,
+        `⏱️ **Duration:** \`${formatDuration(this.current.duration)}\``,
+        '',
+        `**Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? 'On' : 'Off'}\` | Queue \`${this.queue.length}\``
       ].join('\n'))
-      .addFields(
-        { name: 'Judul', value: truncate(this.current.title, 1024) || 'Unknown' },
-        { name: 'Uploader', value: truncate(this.current.uploader || 'Unknown', 1024), inline: true },
-        { name: 'Queue', value: String(this.queue.length), inline: true }
-      );
+      .setFooter({ text: `Requested by ${this.current.requester?.name || 'Unknown'}` });
 
     if (this.current.webpageUrl) embed.setURL(this.current.webpageUrl);
     if (this.current.thumbnail) embed.setThumbnail(this.current.thumbnail);
-    if (this.current.duration > 0) {
-      embed.addFields({
-        name: 'Ends',
-        value: `<t:${nowUnixPlus((this.current.duration - (this.current.seekSeconds || 0)) * 1000)}:R>`,
-        inline: true
-      });
-    }
 
     return embed;
   }
 
   buildControlRows() {
+    const isPaused = this.player.state.status === AudioPlayerStatus.Paused;
+
     return [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('player:toggle').setLabel('Play/Pause').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('player:skip').setLabel('Skip').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('player:stop').setLabel('Stop').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('player:shuffle').setLabel('Shuffle').setStyle(this.shuffleActive ? ButtonStyle.Success : ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('player:toggle').setLabel(isPaused ? '▶️ Resume' : '⏸️ Pause').setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('player:skip').setLabel('⏭️ Skip').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player:stop').setLabel('⏹️ Stop').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('player:shuffle').setLabel('🔀 Shuffle').setStyle(this.shuffleActive ? ButtonStyle.Success : ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('player:autoplay').setLabel('Autoplay').setStyle(this.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('player:loop').setLabel(`Loop ${this.loopMode !== 'off' ? this.loopMode : ''}`).setStyle(this.loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('player:queue').setLabel('Queue').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('player:lyrics').setLabel('Lyrics').setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('player:autoplay').setLabel('✨ Autoplay').setStyle(this.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player:loop').setLabel(`🔁 Loop ${this.loopMode !== 'off' ? this.loopMode : ''}`).setStyle(this.loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player:queue').setLabel('📋 Queue').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player:lyrics').setLabel('🎤 Lyrics').setStyle(ButtonStyle.Secondary)
       )
     ];
   }
@@ -782,9 +782,11 @@ export class GuildPlayer {
     if (!this.current) throw new Error('Tidak ada lagu yang sedang diputar');
     if (this.player.state.status === AudioPlayerStatus.Paused) {
       this.player.unpause();
+      void this.publishNowPlaying('update');
       return false;
     }
     this.player.pause();
+    void this.publishNowPlaying('update');
     return true;
   }
 
