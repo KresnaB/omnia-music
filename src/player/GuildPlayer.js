@@ -52,6 +52,9 @@ export class GuildPlayer {
     this.autoplaySeedId = null;
     this.currentMetrics = null;
     this.preloadInFlight = new Set();
+    this.playNextPromise = null;
+    this.voiceChannelId = null;
+    this.voiceReconnectPromise = null;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -111,7 +114,7 @@ export class GuildPlayer {
         this.resetIdleTimer();
         return;
       }
-      void this.playNext('idle');
+      await this.queuePlayNext('idle');
     });
 
     this.player.on('error', async (error) => {
@@ -124,7 +127,7 @@ export class GuildPlayer {
       this.consecutiveErrors++;
       if (this.consecutiveErrors < 3) {
         await this.sendStatusMessage(`Playback error: ${error.message}. Mencoba lagu berikutnya...`);
-        void this.playNext('error');
+        void this.queuePlayNext('error');
       } else {
         await this.sendStatusMessage(`Terlalu banyak error berturut-turut. Playback dihentikan.`);
         await this.stop();
@@ -178,7 +181,7 @@ export class GuildPlayer {
     void this.publishNowPlaying('queue-update');
 
     if (!this.current) {
-      void this.playNext('enqueue');
+      void this.queuePlayNext('enqueue');
     } else {
       void this.preloadUpcomingTracks();
     }
@@ -198,6 +201,7 @@ export class GuildPlayer {
   }
 
   async ensureVoice(voiceChannel) {
+    this.voiceChannelId = voiceChannel.id;
     let connection = getVoiceConnection(this.guildId);
 
     if (connection) {
@@ -240,6 +244,8 @@ export class GuildPlayer {
       });
     }
 
+    this.attachConnectionHandlers(connection);
+
     try {
       // Timeout 30 detik — DAVE handshake membutuhkan lebih banyak waktu
       await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
@@ -255,6 +261,65 @@ export class GuildPlayer {
 
     this.resetIdleTimer();
     return connection;
+  }
+
+  attachConnectionHandlers(connection) {
+    if (connection.__omniaHandlersAttached) {
+      return;
+    }
+
+    connection.__omniaHandlersAttached = true;
+    connection.on(VoiceConnectionStatus.Disconnected, () => {
+      void this.handleVoiceDisconnected(connection);
+    });
+  }
+
+  async handleVoiceDisconnected(connection) {
+    if (this.stopRequested) {
+      return;
+    }
+
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
+      ]);
+      return;
+    } catch {
+      if (this.voiceReconnectPromise) {
+        await this.voiceReconnectPromise;
+        return;
+      }
+
+      this.voiceReconnectPromise = this.recoverVoiceConnection().finally(() => {
+        this.voiceReconnectPromise = null;
+      });
+      await this.voiceReconnectPromise;
+    }
+  }
+
+  async recoverVoiceConnection() {
+    if (!this.voiceChannelId) {
+      return;
+    }
+
+    const channel = await this.client.channels.fetch(this.voiceChannelId).catch(() => null);
+    if (!channel?.isVoiceBased?.()) {
+      await this.sendStatusMessage('Voice channel tidak ditemukan untuk reconnect otomatis.');
+      return;
+    }
+
+    try {
+      const connection = getVoiceConnection(this.guildId);
+      connection?.destroy();
+      await this.ensureVoice(channel);
+      if (this.current) {
+        this.player.unpause();
+      }
+      await this.sendStatusMessage('Koneksi voice terputus. Berhasil reconnect otomatis.');
+    } catch (error) {
+      await this.sendStatusMessage(`Koneksi voice terputus dan gagal reconnect otomatis: ${error.message}`);
+    }
   }
 
   resetIdleTimer() {
@@ -385,6 +450,17 @@ export class GuildPlayer {
     await this.autoplayPreparePromise;
   }
 
+  async queuePlayNext(reason = 'manual') {
+    const previous = this.playNextPromise || Promise.resolve();
+    const nextRun = previous.then(() => this.playNext(reason), () => this.playNext(reason));
+    this.playNextPromise = nextRun.finally(() => {
+      if (this.playNextPromise === nextRun) {
+        this.playNextPromise = null;
+      }
+    });
+    return this.playNextPromise;
+  }
+
   async playNext(reason = 'manual') {
     clearTimeout(this.idleTimeout);
 
@@ -451,7 +527,8 @@ export class GuildPlayer {
         await this.sendStatusMessage(`Gagal memutar "${next.title}": ${error.message}. Melewati...`);
         // Tunggu sebentar sebelum skip otomatis untuk menghindari spam API gila-gilaan
         await new Promise(r => setTimeout(r, 1500));
-        return this.playNext('fallback');
+        void this.queuePlayNext('fallback');
+        return;
       } else {
         await this.sendStatusMessage(`❌ Terjadi kesalahan berulang (${this.consecutiveErrors}x). Menghentikan playback.`);
         await this.stop();
@@ -519,17 +596,49 @@ export class GuildPlayer {
     });
 
     let stderr = '';
+    let probeReady = false;
     process.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
 
-    const probed = await demuxProbe(process.stdout);
+    const startupFailure = new Promise((_, reject) => {
+      process.once('error', (error) => {
+        reject(new Error(`ffmpeg spawn failed: ${error.message}`));
+      });
+      process.once('close', (code) => {
+        if (probeReady) {
+          return;
+        }
+        reject(
+          new Error(
+            code && stderr.trim()
+              ? `ffmpeg exited with code ${code}: ${truncate(stderr.trim(), 500)}`
+              : 'ffmpeg berhenti sebelum stream audio siap'
+          )
+        );
+      });
+    });
+
+    let probed;
+    try {
+      probed = await Promise.race([
+        demuxProbe(process.stdout),
+        startupFailure
+      ]);
+    } catch (error) {
+      process.kill('SIGKILL');
+      throw error;
+    }
+    probeReady = true;
     const resource = createAudioResource(probed.stream, {
       inputType: probed.type,
       metadata: track
     });
 
     process.once('close', (code) => {
+      if (this.currentProcess === process) {
+        this.currentProcess = null;
+      }
       if (code && code !== 0 && stderr.trim()) {
         console.warn(`[player:${this.guildId}] ffmpeg exited with code ${code}: ${truncate(stderr.trim(), 500)}`);
       }

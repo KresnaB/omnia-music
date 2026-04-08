@@ -5,6 +5,7 @@ import { config } from '../config.js';
 const execFileAsync = promisify(execFile);
 
 const resolveCache = new Map();
+const STREAM_URL_MAX_AGE_MS = 2 * 60 * 1000;
 
 function getCache(key) {
   const item = resolveCache.get(key);
@@ -114,16 +115,25 @@ async function fetchStreamUrl(target) {
     maxBuffer: 16 * 1024 * 1024
   });
 
-  const lines = `${stdout}\n${stderr}`
+  const parseLines = (output) => output
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => /^https?:\/\//.test(line));
 
+  const lines = [...new Set([...parseLines(stdout), ...parseLines(stderr)])];
+  const preferred = lines.find((line) => (
+    /googlevideo\.com/i.test(line) ||
+    /mime=audio/i.test(line) ||
+    /clen=/i.test(line) ||
+    /\.(m4a|webm|ogg)(\?|$)/i.test(line)
+  ));
+
   if (lines.length === 0) {
-    throw new Error('yt-dlp tidak mengembalikan direct stream URL');
+    const detail = `${stdout}\n${stderr}`.trim();
+    throw new Error(`yt-dlp tidak mengembalikan direct stream URL${detail ? `: ${detail.slice(0, 300)}` : ''}`);
   }
 
-  return lines[0];
+  return preferred || lines[0];
 }
 
 function extractStreamUrl(entry) {
@@ -313,7 +323,7 @@ export class YTDlpService {
   }
 
   async hydrate(track) {
-    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < 10 * 60 * 1000) {
+    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < STREAM_URL_MAX_AGE_MS) {
       return track;
     }
 
@@ -352,7 +362,7 @@ export class YTDlpService {
   }
 
   async ensureStreamUrl(track) {
-    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < 10 * 60 * 1000) {
+    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < STREAM_URL_MAX_AGE_MS) {
       return track;
     }
 
