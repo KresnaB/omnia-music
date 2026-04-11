@@ -34,6 +34,7 @@ export class GuildPlayer {
     this.history = [];
     this.current = null;
     this.currentProcess = null;
+    this.currentSourceProcess = null;
     this.currentMessage = null;
     this.playNonce = 0;
     this.loopMode = 'off';
@@ -89,6 +90,10 @@ export class GuildPlayer {
         this.currentProcess.kill('SIGKILL');
         this.currentProcess = null;
       }
+      if (this.currentSourceProcess) {
+        this.currentSourceProcess.kill('SIGKILL');
+        this.currentSourceProcess = null;
+      }
 
       const finished = this.current;
       const wasSkipped = this.skipRequested;
@@ -122,6 +127,10 @@ export class GuildPlayer {
       if (this.currentProcess) {
         this.currentProcess.kill('SIGKILL');
         this.currentProcess = null;
+      }
+      if (this.currentSourceProcess) {
+        this.currentSourceProcess.kill('SIGKILL');
+        this.currentSourceProcess = null;
       }
       
       this.consecutiveErrors++;
@@ -511,15 +520,20 @@ export class GuildPlayer {
 
       if (nonce !== this.playNonce) {
         prepared.process.kill('SIGKILL');
+        prepared.sourceProcess?.kill('SIGKILL');
         return;
       }
 
       if (this.currentProcess) {
         this.currentProcess.kill('SIGKILL');
       }
+      if (this.currentSourceProcess) {
+        this.currentSourceProcess.kill('SIGKILL');
+      }
 
       this.clearLyricMessages();
       this.currentProcess = prepared.process;
+      this.currentSourceProcess = prepared.sourceProcess || null;
       this.currentMetrics = metrics;
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
@@ -561,7 +575,11 @@ export class GuildPlayer {
   }
 
   buildFfmpegArgs(track, profile = 'opus') {
-    const headers = this.buildHttpHeaders(track);
+    return this.buildFfmpegArgsForInput(track, profile, 'url');
+  }
+
+  buildFfmpegArgsForInput(track, profile = 'opus', inputMode = 'url') {
+    const headers = inputMode === 'url' ? this.buildHttpHeaders(track) : '';
     const args = [
       '-nostdin',
       '-hide_banner',
@@ -572,27 +590,32 @@ export class GuildPlayer {
       '-probesize',
       '32M',
       '-analyzeduration',
-      '15M',
-      ...(track.seekSeconds > 0 ? ['-ss', String(track.seekSeconds)] : []),
-      '-reconnect',
-      '1',
-      '-reconnect_streamed',
-      '1',
-      '-reconnect_on_network_error',
-      '1',
-      '-reconnect_on_http_error',
-      '4xx,5xx',
-      '-reconnect_delay_max',
-      '5',
+      '15M'
     ];
 
-    if (headers) {
-      args.push('-headers', headers);
+    if (inputMode === 'url') {
+      args.push(
+        ...(track.seekSeconds > 0 ? ['-ss', String(track.seekSeconds)] : []),
+        '-reconnect',
+        '1',
+        '-reconnect_streamed',
+        '1',
+        '-reconnect_on_network_error',
+        '1',
+        '-reconnect_on_http_error',
+        '4xx,5xx',
+        '-reconnect_delay_max',
+        '5'
+      );
+
+      if (headers) {
+        args.push('-headers', headers);
+      }
     }
 
     args.push(
       '-i',
-      track.streamUrl,
+      inputMode === 'stdin' ? 'pipe:0' : track.streamUrl,
       '-vn',
       '-sn',
       '-dn',
@@ -637,10 +660,41 @@ export class GuildPlayer {
     return args;
   }
 
-  spawnAudioProcess(track, profile = 'opus') {
-    const args = this.buildFfmpegArgs(track, profile);
+  buildYtDlpPipeArgs(track) {
+    const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+    const args = [
+      '--default-search',
+      config.defaultSearchPlatform,
+      '--no-warnings',
+      '--no-progress',
+      '--skip-download',
+      '--no-playlist',
+      '-f',
+      'bestaudio/best',
+      '-o',
+      '-',
+      target
+    ];
+
+    if (config.ytDlpYoutubeArgs) {
+      args.push('--extractor-args', config.ytDlpYoutubeArgs);
+    }
+
+    if (config.ytDlpPotProviderArgs) {
+      args.push('--extractor-args', config.ytDlpPotProviderArgs);
+    }
+
+    if (config.ytDlpCookiesFile) {
+      args.push('--cookies', config.ytDlpCookiesFile);
+    }
+
+    return args;
+  }
+
+  spawnAudioProcess(track, profile = 'opus', inputMode = 'url', sourceProcess = null) {
+    const args = this.buildFfmpegArgsForInput(track, profile, inputMode);
     const process = spawn(config.ffmpegPath, args, {
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: [inputMode === 'stdin' ? 'pipe' : 'ignore', 'pipe', 'pipe']
     });
 
     let stderr = '';
@@ -648,6 +702,12 @@ export class GuildPlayer {
     process.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
+
+    if (sourceProcess?.stdout && inputMode === 'stdin') {
+      sourceProcess.stdout.pipe(process.stdin);
+      sourceProcess.stdout.on('error', () => null);
+      process.stdin.on('error', () => null);
+    }
 
     const startupFailure = new Promise((_, reject) => {
       process.once('error', (error) => {
@@ -674,6 +734,7 @@ export class GuildPlayer {
 
     return {
       process,
+      sourceProcess,
       probe,
       markProbeReady: () => {
         probeReady = true;
@@ -694,21 +755,59 @@ export class GuildPlayer {
       probed = await processState.probe;
     } catch (error) {
       processState.process.kill('SIGKILL');
+      processState.sourceProcess?.kill('SIGKILL');
       const message = String(error?.message || '');
       const canRetryWithPcm =
         /libopus|encoder|codec|output format|s16le|ogg/i.test(message) ||
         /Unknown encoder|Invalid argument|could not write header/i.test(message);
+      const canRetryViaYtDlpPipe =
+        /403|401|404|server returned|input\/output error|end of file|invalid data found|Connection reset|Forbidden|googlevideo/i.test(message);
 
-      if (!canRetryWithPcm) {
-        throw error;
-      }
+      if (canRetryViaYtDlpPipe) {
+        const sourceProcess = spawn(config.ytDlpPath, this.buildYtDlpPipeArgs(track), {
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        processState = this.spawnAudioProcess(track, 'opus', 'stdin', sourceProcess);
+        try {
+          probed = await processState.probe;
+        } catch (pipeError) {
+          processState.process.kill('SIGKILL');
+          processState.sourceProcess?.kill('SIGKILL');
+          const pipeMessage = String(pipeError?.message || '');
+          const canRetryPipeWithPcm =
+            /libopus|encoder|codec|output format|s16le|ogg/i.test(pipeMessage) ||
+            /Unknown encoder|Invalid argument|could not write header/i.test(pipeMessage);
 
-      processState = this.spawnAudioProcess(track, 'pcm');
-      try {
-        probed = await processState.probe;
-      } catch (retryError) {
-        processState.process.kill('SIGKILL');
-        throw retryError;
+          if (!canRetryPipeWithPcm) {
+            throw pipeError;
+          }
+
+          processState.sourceProcess?.kill('SIGKILL');
+          const sourceProcessPcm = spawn(config.ytDlpPath, this.buildYtDlpPipeArgs(track), {
+            stdio: ['ignore', 'pipe', 'pipe']
+          });
+          processState = this.spawnAudioProcess(track, 'pcm', 'stdin', sourceProcessPcm);
+          try {
+            probed = await processState.probe;
+          } catch (pipeRetryError) {
+            processState.process.kill('SIGKILL');
+            processState.sourceProcess?.kill('SIGKILL');
+            throw pipeRetryError;
+          }
+        }
+      } else {
+        if (!canRetryWithPcm) {
+          throw error;
+        }
+
+        processState = this.spawnAudioProcess(track, 'pcm');
+        try {
+          probed = await processState.probe;
+        } catch (retryError) {
+          processState.process.kill('SIGKILL');
+          processState.sourceProcess?.kill('SIGKILL');
+          throw retryError;
+        }
       }
     }
     processState.markProbeReady();
@@ -722,12 +821,15 @@ export class GuildPlayer {
       if (this.currentProcess === processState.process) {
         this.currentProcess = null;
       }
+      if (this.currentSourceProcess === processState.sourceProcess) {
+        this.currentSourceProcess = null;
+      }
       if (code && code !== 0 && finalStderr) {
         console.warn(`[player:${this.guildId}] ffmpeg exited with code ${code}: ${truncate(finalStderr, 500)}`);
       }
     });
 
-    return { resource, process: processState.process };
+    return { resource, process: processState.process, sourceProcess: processState.sourceProcess };
   }
 
   async publishNowPlaying() {
@@ -839,6 +941,10 @@ export class GuildPlayer {
     if (this.currentProcess) {
       this.currentProcess.kill('SIGKILL');
       this.currentProcess = null;
+    }
+    if (this.currentSourceProcess) {
+      this.currentSourceProcess.kill('SIGKILL');
+      this.currentSourceProcess = null;
     }
 
     this.clearLyricMessages();
