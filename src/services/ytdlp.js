@@ -38,6 +38,28 @@ function parseJsonBlob(output) {
   return JSON.parse(output);
 }
 
+async function runYtDlpJson(args) {
+  try {
+    return await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
+  } catch (error) {
+    const output = `${error.stdout || ''}\n${error.stderr || ''}`.trim();
+    if (!output) {
+      throw error;
+    }
+
+    try {
+      const payload = parseJsonBlob(output);
+      return {
+        stdout: error.stdout || '',
+        stderr: error.stderr || '',
+        payload
+      };
+    } catch {
+      throw error;
+    }
+  }
+}
+
 function isUrl(input) {
   return /^https?:\/\//i.test(input.trim());
 }
@@ -188,11 +210,7 @@ async function fetchStreamSelection(target) {
     target
   ];
 
-  const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, {
-    maxBuffer: 16 * 1024 * 1024
-  });
-
-  const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+  const { stdout, stderr, payload } = await runYtDlpJson(args);
   const { source, streamUrl } = selectBestAudioSource(payload);
 
   if (!streamUrl) {
@@ -318,8 +336,7 @@ export class YTDlpService {
     ];
 
     try {
-      const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
-      const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+      const { stdout, stderr, payload } = await runYtDlpJson(args);
 
       if (Array.isArray(payload.entries) && payload.entries.length > 0) {
         if (isPlaylistLike(query, payload)) {
@@ -373,8 +390,7 @@ export class YTDlpService {
     ];
 
     try {
-      const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
-      const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+      const { stdout, stderr, payload } = await runYtDlpJson(args);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
       const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
 
@@ -428,8 +444,7 @@ export class YTDlpService {
     ];
 
     try {
-      const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
-      const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+      const { stdout, stderr, payload } = await runYtDlpJson(args);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
 
       track.id = next.id;
