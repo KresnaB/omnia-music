@@ -102,19 +102,20 @@ function buildBaseArgs() {
 }
 
 function extractHttpHeaders(entry) {
+  const source = unwrapSingleEntry(entry);
   const candidates = [];
 
-  if (Array.isArray(entry?.requested_downloads)) {
-    candidates.push(...entry.requested_downloads);
+  if (Array.isArray(source?.requested_downloads)) {
+    candidates.push(...source.requested_downloads);
   }
 
-  if (Array.isArray(entry?.formats)) {
-    const audioOnly = entry.formats.filter((f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url));
+  if (Array.isArray(source?.formats)) {
+    const audioOnly = source.formats.filter((f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url));
     audioOnly.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
     candidates.push(...audioOnly);
   }
 
-  candidates.push(entry);
+  candidates.push(source);
 
   for (const candidate of candidates) {
     if (candidate?.http_headers && typeof candidate.http_headers === 'object') {
@@ -123,6 +124,58 @@ function extractHttpHeaders(entry) {
   }
 
   return null;
+}
+
+function unwrapSingleEntry(entry) {
+  if (entry?._type === 'playlist' && Array.isArray(entry.entries) && entry.entries.length === 1) {
+    return entry.entries[0];
+  }
+
+  return entry;
+}
+
+function selectBestAudioSource(entry) {
+  const source = unwrapSingleEntry(entry);
+
+  if (!source) {
+    return { source: null, streamUrl: null };
+  }
+
+  if (source._type === 'url' || source._type === 'url_transparent') {
+    return { source, streamUrl: null };
+  }
+
+  const requestedDownloads = Array.isArray(source.requested_downloads) ? source.requested_downloads : [];
+  const requestedAudio = requestedDownloads.find((f) => f?.url && /^https?:\/\//.test(f.url));
+  if (requestedAudio?.url) {
+    return { source, streamUrl: requestedAudio.url };
+  }
+
+  if (Array.isArray(source.formats) && source.formats.length > 0) {
+    const audioOnly = source.formats
+      .filter((f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url))
+      .sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
+    if (audioOnly.length > 0) {
+      return { source, streamUrl: audioOnly[0].url };
+    }
+
+    const anyHttp = source.formats.filter((f) => f.url && /^https?:\/\//.test(f.url));
+    if (anyHttp.length > 0) {
+      return { source, streamUrl: anyHttp[anyHttp.length - 1].url };
+    }
+  }
+
+  if (source.url && /^https?:\/\//.test(source.url)) {
+    if (source.url.includes('googlevideo.com')) {
+      return { source, streamUrl: source.url };
+    }
+
+    if (source.url !== source.webpage_url && !source.url.includes('youtube.com/watch')) {
+      return { source, streamUrl: source.url };
+    }
+  }
+
+  return { source, streamUrl: null };
 }
 
 async function fetchStreamSelection(target) {
@@ -140,15 +193,7 @@ async function fetchStreamSelection(target) {
   });
 
   const payload = parseJsonBlob(`${stdout}\n${stderr}`);
-  const selected = Array.isArray(payload.requested_downloads) && payload.requested_downloads.length > 0
-    ? payload.requested_downloads[0]
-    : null;
-  const fallback = Array.isArray(payload.formats) && payload.formats.length > 0
-    ? payload.formats
-        .filter((f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url))
-        .sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0))[0]
-    : null;
-  const streamUrl = selected?.url || fallback?.url;
+  const { source, streamUrl } = selectBestAudioSource(payload);
 
   if (!streamUrl) {
     const detail = `${stdout}\n${stderr}`.trim();
@@ -157,55 +202,17 @@ async function fetchStreamSelection(target) {
 
   return {
     streamUrl,
-    httpHeaders: extractHttpHeaders(selected || fallback || payload)
+    httpHeaders: extractHttpHeaders(source || payload)
   };
 }
 
 function extractStreamUrl(entry) {
-  if (entry._type === 'url' || entry._type === 'url_transparent') {
-    return null;
-  }
-
-  // Coba cari format audio terbaik dari field `formats`
-  if (Array.isArray(entry.formats) && entry.formats.length > 0) {
-    // Prioritas: format audio-only dengan extension webm/ogg/m4a
-    const audioOnly = entry.formats.filter(
-      (f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url)
-    );
-    if (audioOnly.length > 0) {
-      // Pilih bitrate tertinggi
-      audioOnly.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
-      return audioOnly[0].url;
-    }
-    // Fallback: format apapun yang ada URL http
-    const anyHttp = entry.formats.filter((f) => f.url && /^https?:\/\//.test(f.url));
-    if (anyHttp.length > 0) return anyHttp[anyHttp.length - 1].url;
-  }
-  
-  // Fallback ke requested_formats jika yt-dlp menaruh format terbaik di sana
-  if (Array.isArray(entry.requested_formats) && entry.requested_formats.length > 0) {
-    const reqAudio = entry.requested_formats.find(f => f.url && /^https?:\/\//.test(f.url));
-    if (reqAudio) return reqAudio.url;
-  }
-
-  // JANGAN fallback ke entry.url jika itu adalah halaman web (youtube.com, dll)
-  // Hanya balikkan URL jika sudah didefinisikan sebagai raw stream
-  if (entry.url && /^https?:\/\//.test(entry.url)) {
-    // Jika URL mengandung googlevideo, maka ini sudah dipastikan stream
-    if (entry.url.includes('googlevideo.com')) {
-      return entry.url;
-    }
-    // Fallback lama jika formatnya berbeda tapi bukan halaman nonton standar
-    if (entry.url !== entry.webpage_url && !entry.url.includes('youtube.com/watch')) {
-      return entry.url;
-    }
-  }
-
-  return null;
+  return selectBestAudioSource(entry).streamUrl;
 }
 
 function buildCanonicalWebpageUrl(entry, fallbackQuery = '') {
-  const candidates = [entry.webpage_url, entry.original_url, entry.url, fallbackQuery].filter(Boolean);
+  const source = unwrapSingleEntry(entry);
+  const candidates = [source?.webpage_url, source?.original_url, source?.url, fallbackQuery].filter(Boolean);
 
   for (const candidate of candidates) {
     if (/^https?:\/\//.test(candidate)) {
@@ -221,33 +228,34 @@ function buildCanonicalWebpageUrl(entry, fallbackQuery = '') {
     }
   }
 
-  const extractor = String(entry.extractor_key || entry.ie_key || '').toLowerCase();
-  const looksLikeYoutubeId = typeof entry.id === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(entry.id);
-  if (((extractor.includes('youtube') || extractor === 'youtube') && entry.id) || looksLikeYoutubeId) {
-    return `https://www.youtube.com/watch?v=${entry.id}`;
+  const extractor = String(source?.extractor_key || source?.ie_key || '').toLowerCase();
+  const looksLikeYoutubeId = typeof source?.id === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(source.id);
+  if (((extractor.includes('youtube') || extractor === 'youtube') && source?.id) || looksLikeYoutubeId) {
+    return `https://www.youtube.com/watch?v=${source.id}`;
   }
 
   return fallbackQuery;
 }
 
 function normalizeEntry(entry, fallbackQuery = '') {
-  const webpageUrl = buildCanonicalWebpageUrl(entry, fallbackQuery);
-  const streamUrl = extractStreamUrl(entry);
+  const source = unwrapSingleEntry(entry) || entry;
+  const webpageUrl = buildCanonicalWebpageUrl(source, fallbackQuery);
+  const streamUrl = extractStreamUrl(source);
   return {
-    id: entry.id || webpageUrl,
-    title: entry.title || entry.fulltitle || fallbackQuery || 'Unknown title',
+    id: source.id || webpageUrl,
+    title: source.title || source.fulltitle || fallbackQuery || 'Unknown title',
     url: webpageUrl,
     webpageUrl,
     streamUrl,
-    duration: Math.floor(entry.duration || 0),
-    uploader: entry.uploader || entry.channel || entry.artist || 'Unknown',
-    thumbnail: entry.thumbnail || null,
-    source: String(entry.extractor_key || entry.ie_key || 'youtube').toLowerCase(),
+    duration: Math.floor(source.duration || 0),
+    uploader: source.uploader || source.channel || source.artist || 'Unknown',
+    thumbnail: source.thumbnail || null,
+    source: String(source.extractor_key || source.ie_key || 'youtube').toLowerCase(),
     searchQuery: fallbackQuery,
     preparedAt: streamUrl ? Date.now() : null,
     seekSeconds: 0,
-    httpHeaders: extractHttpHeaders(entry),
-    metadataPending: !streamUrl || !entry.duration || !entry.thumbnail || !entry.uploader
+    httpHeaders: extractHttpHeaders(source),
+    metadataPending: !streamUrl || !source.duration || !source.thumbnail || !source.uploader
   };
 }
 
