@@ -101,11 +101,35 @@ function buildBaseArgs() {
   return args;
 }
 
-async function fetchStreamUrl(target) {
+function extractHttpHeaders(entry) {
+  const candidates = [];
+
+  if (Array.isArray(entry?.requested_downloads)) {
+    candidates.push(...entry.requested_downloads);
+  }
+
+  if (Array.isArray(entry?.formats)) {
+    const audioOnly = entry.formats.filter((f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url));
+    audioOnly.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
+    candidates.push(...audioOnly);
+  }
+
+  candidates.push(entry);
+
+  for (const candidate of candidates) {
+    if (candidate?.http_headers && typeof candidate.http_headers === 'object') {
+      return { ...candidate.http_headers };
+    }
+  }
+
+  return null;
+}
+
+async function fetchStreamSelection(target) {
   const args = [
     ...buildBaseArgs(),
-    '--get-url',
     '--no-playlist',
+    '--dump-single-json',
     '-f',
     'bestaudio/best',
     target
@@ -115,25 +139,26 @@ async function fetchStreamUrl(target) {
     maxBuffer: 16 * 1024 * 1024
   });
 
-  const parseLines = (output) => output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^https?:\/\//.test(line));
+  const payload = parseJsonBlob(`${stdout}\n${stderr}`);
+  const selected = Array.isArray(payload.requested_downloads) && payload.requested_downloads.length > 0
+    ? payload.requested_downloads[0]
+    : null;
+  const fallback = Array.isArray(payload.formats) && payload.formats.length > 0
+    ? payload.formats
+        .filter((f) => f.vcodec === 'none' && f.url && /^https?:\/\//.test(f.url))
+        .sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0))[0]
+    : null;
+  const streamUrl = selected?.url || fallback?.url;
 
-  const lines = [...new Set([...parseLines(stdout), ...parseLines(stderr)])];
-  const preferred = lines.find((line) => (
-    /googlevideo\.com/i.test(line) ||
-    /mime=audio/i.test(line) ||
-    /clen=/i.test(line) ||
-    /\.(m4a|webm|ogg)(\?|$)/i.test(line)
-  ));
-
-  if (lines.length === 0) {
+  if (!streamUrl) {
     const detail = `${stdout}\n${stderr}`.trim();
     throw new Error(`yt-dlp tidak mengembalikan direct stream URL${detail ? `: ${detail.slice(0, 300)}` : ''}`);
   }
 
-  return preferred || lines[0];
+  return {
+    streamUrl,
+    httpHeaders: extractHttpHeaders(selected || fallback || payload)
+  };
 }
 
 function extractStreamUrl(entry) {
@@ -221,6 +246,7 @@ function normalizeEntry(entry, fallbackQuery = '') {
     searchQuery: fallbackQuery,
     preparedAt: streamUrl ? Date.now() : null,
     seekSeconds: 0,
+    httpHeaders: extractHttpHeaders(entry),
     metadataPending: !streamUrl || !entry.duration || !entry.thumbnail || !entry.uploader
   };
 }
@@ -255,9 +281,10 @@ export class YTDlpService {
 
     if (isUrl(normalizedQuery) && !isPlaylist) {
       try {
-        const streamUrl = await fetchStreamUrl(target);
+        const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
         const track = buildFastTrack(normalizedQuery);
         track.streamUrl = streamUrl;
+        track.httpHeaders = httpHeaders;
         track.preparedAt = Date.now();
 
         const resultPayload = {
@@ -341,13 +368,14 @@ export class YTDlpService {
       const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
       const payload = parseJsonBlob(`${stdout}\n${stderr}`);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
-      const streamUrl = await fetchStreamUrl(target);
+      const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
 
       track.id = next.id;
       track.title = next.title;
       track.url = next.url;
       track.webpageUrl = next.webpageUrl;
       track.streamUrl = streamUrl || next.streamUrl;
+      track.httpHeaders = httpHeaders || next.httpHeaders;
       track.duration = next.duration;
       track.uploader = next.uploader;
       track.thumbnail = next.thumbnail;
@@ -369,7 +397,9 @@ export class YTDlpService {
     const target = track.webpageUrl || track.url || track.searchQuery || track.title;
 
     try {
-      track.streamUrl = await fetchStreamUrl(target);
+      const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
+      track.streamUrl = streamUrl;
+      track.httpHeaders = httpHeaders || track.httpHeaders || null;
       track.preparedAt = Date.now();
       return track;
     } catch (error) {

@@ -544,11 +544,24 @@ export class GuildPlayer {
     }
   }
 
-  async createAudioPipeline(track) {
-    if (!track.streamUrl) {
-      throw new Error(`Gagal mendapatkan direct stream audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`);
+  buildHttpHeaders(track) {
+    const headers = { ...(track.httpHeaders || {}) };
+
+    if (track.webpageUrl && /^https?:\/\//.test(track.webpageUrl)) {
+      headers.Referer ??= track.webpageUrl;
     }
 
+    headers.Origin ??= 'https://www.youtube.com';
+    headers['User-Agent'] ??= 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+
+    return Object.entries(headers)
+      .filter(([, value]) => value !== null && value !== undefined && String(value).length > 0)
+      .map(([key, value]) => `${key}: ${value}\r\n`)
+      .join('');
+  }
+
+  buildFfmpegArgs(track, profile = 'opus') {
+    const headers = this.buildHttpHeaders(track);
     const args = [
       '-nostdin',
       '-hide_banner',
@@ -571,6 +584,13 @@ export class GuildPlayer {
       '4xx,5xx',
       '-reconnect_delay_max',
       '5',
+    ];
+
+    if (headers) {
+      args.push('-headers', headers);
+    }
+
+    args.push(
       '-i',
       track.streamUrl,
       '-vn',
@@ -579,7 +599,23 @@ export class GuildPlayer {
       '-map',
       'a?',
       '-af',
-      'aresample=async=1:min_hard_comp=0.100:first_pts=0',
+      'aresample=async=1:min_hard_comp=0.100:first_pts=0'
+    );
+
+    if (profile === 'pcm') {
+      args.push(
+        '-f',
+        's16le',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        'pipe:1'
+      );
+      return args;
+    }
+
+    args.push(
       '-c:a',
       'libopus',
       '-application',
@@ -597,8 +633,12 @@ export class GuildPlayer {
       '-f',
       'ogg',
       'pipe:1'
-    ];
+    );
+    return args;
+  }
 
+  spawnAudioProcess(track, profile = 'opus') {
+    const args = this.buildFfmpegArgs(track, profile);
     const process = spawn(config.ffmpegPath, args, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -627,32 +667,67 @@ export class GuildPlayer {
       });
     });
 
-    let probed;
-    try {
-      probed = await Promise.race([
-        demuxProbe(process.stdout),
-        startupFailure
-      ]);
-    } catch (error) {
-      process.kill('SIGKILL');
-      throw error;
+    const probe = Promise.race([
+      demuxProbe(process.stdout),
+      startupFailure
+    ]);
+
+    return {
+      process,
+      probe,
+      markProbeReady: () => {
+        probeReady = true;
+      },
+      stderr: () => stderr
+    };
+  }
+
+  async createAudioPipeline(track) {
+    if (!track.streamUrl) {
+      throw new Error(`Gagal mendapatkan direct stream audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`);
     }
-    probeReady = true;
+
+    let processState = this.spawnAudioProcess(track, 'opus');
+    let probed;
+
+    try {
+      probed = await processState.probe;
+    } catch (error) {
+      processState.process.kill('SIGKILL');
+      const message = String(error?.message || '');
+      const canRetryWithPcm =
+        /libopus|encoder|codec|output format|s16le|ogg/i.test(message) ||
+        /Unknown encoder|Invalid argument|could not write header/i.test(message);
+
+      if (!canRetryWithPcm) {
+        throw error;
+      }
+
+      processState = this.spawnAudioProcess(track, 'pcm');
+      try {
+        probed = await processState.probe;
+      } catch (retryError) {
+        processState.process.kill('SIGKILL');
+        throw retryError;
+      }
+    }
+    processState.markProbeReady();
     const resource = createAudioResource(probed.stream, {
       inputType: probed.type,
       metadata: track
     });
 
-    process.once('close', (code) => {
-      if (this.currentProcess === process) {
+    const finalStderr = processState.stderr().trim();
+    processState.process.once('close', (code) => {
+      if (this.currentProcess === processState.process) {
         this.currentProcess = null;
       }
-      if (code && code !== 0 && stderr.trim()) {
-        console.warn(`[player:${this.guildId}] ffmpeg exited with code ${code}: ${truncate(stderr.trim(), 500)}`);
+      if (code && code !== 0 && finalStderr) {
+        console.warn(`[player:${this.guildId}] ffmpeg exited with code ${code}: ${truncate(finalStderr, 500)}`);
       }
     });
 
-    return { resource, process };
+    return { resource, process: processState.process };
   }
 
   async publishNowPlaying() {
