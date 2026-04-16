@@ -8,6 +8,7 @@ import {
 } from 'discord.js';
 import { config, validateConfig } from './config.js';
 import { commands } from './discord/commands.js';
+import { AudioCacheService } from './services/audioCache.js';
 import { LyricsService } from './services/lyrics.js';
 import { YTDlpService } from './services/ytdlp.js';
 import { PlayerManager } from './player/PlayerManager.js';
@@ -20,8 +21,9 @@ const client = new Client({
 });
 
 const ytdlp = new YTDlpService();
+const audioCache = new AudioCacheService();
 const lyrics = new LyricsService();
-const players = new PlayerManager({ client, ytdlp, lyrics });
+const players = new PlayerManager({ client, ytdlp, lyrics, audioCache });
 const AUTO_DELETE_MS = 5000;
 
 function helpEmbed() {

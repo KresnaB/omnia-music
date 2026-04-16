@@ -25,11 +25,12 @@ function cloneTrack(track) {
 }
 
 export class GuildPlayer {
-  constructor({ client, guildId, ytdlp, lyrics }) {
+  constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
     this.client = client;
     this.guildId = guildId;
     this.ytdlp = ytdlp;
     this.lyrics = lyrics;
+    this.audioCache = audioCache;
     this.queue = [];
     this.history = [];
     this.current = null;
@@ -383,12 +384,33 @@ export class GuildPlayer {
 
     this.preloadInFlight.add(nextTrack.id);
     try {
-      await this.ytdlp.ensureStreamUrl(nextTrack);
+      await this.prepareTrackForPlayback(nextTrack, { trigger: 'preload', allowBackgroundDownload: true });
     } catch (error) {
       console.warn(`[player:${this.guildId}] preload failed for ${nextTrack.title}:`, error.message);
     } finally {
       this.preloadInFlight.delete(nextTrack.id);
     }
+  }
+
+  async prepareTrackForPlayback(track, { trigger = 'play', allowBackgroundDownload = true } = {}) {
+    if (track.localPath) {
+      return track;
+    }
+
+    await this.ytdlp.hydrateMetadata(track);
+    await this.audioCache.hydrateLocalReference(track);
+
+    if (track.localPath) {
+      return track;
+    }
+
+    await this.ytdlp.ensureStreamUrl(track);
+
+    if (allowBackgroundDownload) {
+      void this.audioCache.queueDownload(track);
+    }
+
+    return track;
   }
 
   async prepareAutoplayTrack() {
@@ -511,7 +533,7 @@ export class GuildPlayer {
 
     try {
       const hydrateStartedAt = Date.now();
-      await this.ytdlp.ensureStreamUrl(next);
+      await this.prepareTrackForPlayback(next, { trigger: reason, allowBackgroundDownload: true });
       metrics.hydrateMs = Date.now() - hydrateStartedAt;
 
       const pipelineStartedAt = Date.now();
@@ -593,20 +615,25 @@ export class GuildPlayer {
       '15M'
     ];
 
-    if (inputMode === 'url') {
+    if (inputMode === 'url' || inputMode === 'local') {
       args.push(
-        ...(track.seekSeconds > 0 ? ['-ss', String(track.seekSeconds)] : []),
-        '-reconnect',
-        '1',
-        '-reconnect_streamed',
-        '1',
-        '-reconnect_on_network_error',
-        '1',
-        '-reconnect_on_http_error',
-        '4xx,5xx',
-        '-reconnect_delay_max',
-        '5'
+        ...(track.seekSeconds > 0 ? ['-ss', String(track.seekSeconds)] : [])
       );
+
+      if (inputMode === 'url') {
+        args.push(
+          '-reconnect',
+          '1',
+          '-reconnect_streamed',
+          '1',
+          '-reconnect_on_network_error',
+          '1',
+          '-reconnect_on_http_error',
+          '4xx,5xx',
+          '-reconnect_delay_max',
+          '5'
+        );
+      }
 
       if (headers) {
         args.push('-headers', headers);
@@ -615,7 +642,7 @@ export class GuildPlayer {
 
     args.push(
       '-i',
-      inputMode === 'stdin' ? 'pipe:0' : track.streamUrl,
+      inputMode === 'stdin' ? 'pipe:0' : inputMode === 'local' ? track.localPath : track.streamUrl,
       '-vn',
       '-sn',
       '-dn',
@@ -744,11 +771,12 @@ export class GuildPlayer {
   }
 
   async createAudioPipeline(track) {
-    if (!track.streamUrl) {
+    if (!track.localPath && !track.streamUrl) {
       throw new Error(`Gagal mendapatkan direct stream audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`);
     }
 
-    let processState = this.spawnAudioProcess(track, 'opus');
+    const primaryInputMode = track.localPath ? 'local' : 'url';
+    let processState = this.spawnAudioProcess(track, 'opus', primaryInputMode);
     let probed;
 
     try {
@@ -761,6 +789,7 @@ export class GuildPlayer {
         /libopus|encoder|codec|output format|s16le|ogg/i.test(message) ||
         /Unknown encoder|Invalid argument|could not write header/i.test(message);
       const canRetryViaYtDlpPipe =
+        primaryInputMode === 'url' &&
         /403|401|404|server returned|input\/output error|end of file|invalid data found|Connection reset|Forbidden|googlevideo/i.test(message);
 
       if (canRetryViaYtDlpPipe) {
@@ -800,7 +829,7 @@ export class GuildPlayer {
           throw error;
         }
 
-        processState = this.spawnAudioProcess(track, 'pcm');
+        processState = this.spawnAudioProcess(track, 'pcm', primaryInputMode);
         try {
           probed = await processState.probe;
         } catch (retryError) {
@@ -861,6 +890,7 @@ export class GuildPlayer {
       .setDescription([
         `👤 **Uploader:** ${truncate(this.current.uploader || 'Unknown', 50)}`,
         `⏱️ **Duration:** \`${formatDuration(this.current.duration)}\``,
+        `💾 **Source:** \`${this.current.localPath ? 'local-cache' : 'stream'}\``,
         '',
         `**Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? 'On' : 'Off'}\` | Queue \`${this.queue.length}\``
       ].join('\n'))

@@ -1,6 +1,12 @@
 import 'dotenv/config';
+import path from 'node:path';
 
 function toInt(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function toBigInt(value, fallback) {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isNaN(parsed) ? fallback : parsed;
 }
@@ -20,6 +26,11 @@ export const config = {
   defaultVolume: toInt(process.env.DEFAULT_VOLUME, 100),
   defaultIdleTimeoutMs: toInt(process.env.DEFAULT_IDLE_TIMEOUT_MS, 10 * 60 * 1000),
   defaultSearchPlatform: process.env.DEFAULT_SEARCH_PLATFORM || 'youtube',
+  audioCacheDir: path.resolve(process.env.LOCAL_AUDIO_CACHE_DIR || './storage/audio-cache'),
+  audioCacheIndexFile: path.resolve(process.env.LOCAL_AUDIO_CACHE_INDEX_FILE || './storage/audio-cache/index.json'),
+  audioCacheMaxTracks: toInt(process.env.LOCAL_AUDIO_CACHE_MAX_TRACKS, 9000),
+  audioCacheMaxSizeBytes: toBigInt(process.env.LOCAL_AUDIO_CACHE_MAX_SIZE_BYTES, 30 * 1024 * 1024 * 1024),
+  audioCacheBitrateKbps: toInt(process.env.LOCAL_AUDIO_CACHE_BITRATE_KBPS, 128),
   maxPlaylistTracks: 100
 };
 
