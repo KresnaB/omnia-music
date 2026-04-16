@@ -68,6 +68,7 @@ export class GuildPlayer {
     this.voiceReconnectPromise = null;
     this.youtubeStatus = 'unknown';
     this.youtubeFailureReason = null;
+    this.nowPlayingUpdatePromise = Promise.resolve();
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -526,7 +527,7 @@ export class GuildPlayer {
       case 'queued':
         return 'Menunggu download cache';
       case 'skipped':
-        return 'Cache tidak dijalankan';
+        return track.cacheError ? `Cache dilewati: ${truncate(track.cacheError, 80)}` : 'Cache tidak dijalankan';
       default:
         return 'Streaming langsung';
     }
@@ -548,6 +549,13 @@ export class GuildPlayer {
 
   queueCacheDownload(track) {
     if (!track || track.localPath) {
+      return;
+    }
+
+    if (track.duration > config.audioCacheMaxDurationSeconds) {
+      track.cacheStatus = 'skipped';
+      track.cacheError = `durasi > ${Math.floor(config.audioCacheMaxDurationSeconds / 60)} menit`;
+      void this.syncCurrentMessageIfTrack(track);
       return;
     }
 
@@ -1088,23 +1096,31 @@ export class GuildPlayer {
   }
 
   async publishNowPlaying() {
-    if (!this.current || !this.lastTextChannelId) return;
-    const channel = await this.client.channels.fetch(this.lastTextChannelId).catch(() => null);
-    if (!channel?.isTextBased()) return;
+    const runUpdate = async () => {
+      if (!this.current || !this.lastTextChannelId) return;
+      const channel = await this.client.channels.fetch(this.lastTextChannelId).catch(() => null);
+      if (!channel?.isTextBased()) return;
 
-    const embed = this.buildNowPlayingEmbed();
-    const components = this.buildControlRows();
+      const embed = this.buildNowPlayingEmbed();
+      const components = this.buildControlRows();
 
-    if (this.currentMessage) {
-      try {
-        this.currentMessage = await this.currentMessage.edit({ embeds: [embed], components });
-        return;
-      } catch {
-        this.currentMessage = null;
+      if (this.currentMessage) {
+        try {
+          this.currentMessage = await this.currentMessage.edit({ embeds: [embed], components });
+          return;
+        } catch {
+          this.currentMessage = null;
+        }
       }
-    }
 
-    this.currentMessage = await channel.send({ embeds: [embed], components });
+      this.currentMessage = await channel.send({ embeds: [embed], components });
+    };
+
+    this.nowPlayingUpdatePromise = this.nowPlayingUpdatePromise
+      .then(runUpdate, runUpdate)
+      .catch(() => null);
+
+    await this.nowPlayingUpdatePromise;
   }
 
   buildNowPlayingEmbed() {

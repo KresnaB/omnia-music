@@ -31,6 +31,7 @@ export const config = {
   audioCacheMaxTracks: toInt(process.env.LOCAL_AUDIO_CACHE_MAX_TRACKS, 9000),
   audioCacheMaxSizeBytes: toBigInt(process.env.LOCAL_AUDIO_CACHE_MAX_SIZE_BYTES, 30 * 1024 * 1024 * 1024),
   audioCacheBitrateKbps: toInt(process.env.LOCAL_AUDIO_CACHE_BITRATE_KBPS, 128),
+  audioCacheMaxDurationSeconds: toInt(process.env.LOCAL_AUDIO_CACHE_MAX_DURATION_SECONDS, 10 * 60),
   maxPlaylistTracks: 100
 };
 
