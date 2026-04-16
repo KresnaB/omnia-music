@@ -64,6 +64,21 @@ function cloneTrackMeta(track) {
   };
 }
 
+function cloneTrackFromEntry(entry, overrides = {}) {
+  return {
+    ...(entry.track || {}),
+    canonicalKey: entry.canonicalKey,
+    localPath: entry.filePath,
+    streamUrl: null,
+    httpHeaders: null,
+    preparedAt: Date.now(),
+    metadataPending: false,
+    cacheStatus: 'cached',
+    cacheError: null,
+    ...overrides
+  };
+}
+
 function waitForExit(process, label) {
   return new Promise((resolve, reject) => {
     let stderr = '';
@@ -177,6 +192,119 @@ export class AudioCacheService {
 
   getCanonicalKey(track) {
     return canonicalizeTitle(track?.title || track?.searchQuery || track?.webpageUrl || track?.id || '');
+  }
+
+  async getStats() {
+    await this.init();
+    const entries = [...this.index.values()];
+    return {
+      totalTracks: entries.length,
+      totalBytes: entries.reduce((sum, entry) => sum + entry.sizeBytes, 0),
+      maxTracks: config.audioCacheMaxTracks,
+      maxBytes: config.audioCacheMaxSizeBytes
+    };
+  }
+
+  async listEntries({ query = '', limit = 20 } = {}) {
+    await this.init();
+    const needle = canonicalizeTitle(query || '');
+    const entries = [...this.index.values()]
+      .filter((entry) => {
+        if (!query) {
+          return true;
+        }
+
+        const title = canonicalizeTitle(entry.track?.title || '');
+        return (
+          entry.canonicalKey === needle ||
+          entry.canonicalKey.includes(needle) ||
+          title.includes(needle)
+        );
+      })
+      .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
+
+    return {
+      total: entries.length,
+      entries: entries.slice(0, limit).map((entry) => ({ ...entry }))
+    };
+  }
+
+  async resolveQueryToTrack(query, overrides = {}) {
+    await this.init();
+    const needle = canonicalizeTitle(query || '');
+    if (!needle || needle === 'unknown-track') {
+      return null;
+    }
+
+    const exact = this.index.get(needle);
+    if (exact) {
+      exact.lastAccessedAt = Date.now();
+      await this.persistIndex();
+      return cloneTrackFromEntry(exact, overrides);
+    }
+
+    const partial = [...this.index.values()]
+      .filter((entry) => entry.canonicalKey.includes(needle) || needle.includes(entry.canonicalKey))
+      .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0];
+
+    if (!partial) {
+      return null;
+    }
+
+    partial.lastAccessedAt = Date.now();
+    await this.persistIndex();
+    return cloneTrackFromEntry(partial, overrides);
+  }
+
+  async getAutoplayCandidate({ excludeCanonicalKeys = [], requester, originalQuery = 'Cache Autoplay' } = {}) {
+    await this.init();
+    const excluded = new Set(excludeCanonicalKeys.filter(Boolean));
+    let candidates = [...this.index.values()]
+      .filter((entry) => !excluded.has(entry.canonicalKey))
+      .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
+
+    if (candidates.length === 0) {
+      candidates = [...this.index.values()].sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const chosen = candidates[Math.floor(Math.random() * Math.min(candidates.length, 15))];
+    chosen.lastAccessedAt = Date.now();
+    await this.persistIndex();
+    return cloneTrackFromEntry(chosen, {
+      requester,
+      addedAt: Date.now(),
+      originalQuery,
+      requestStartedAt: Date.now(),
+      failoverFromYoutube: true
+    });
+  }
+
+  async deleteByQuery(query) {
+    await this.init();
+    const needle = canonicalizeTitle(query || '');
+    if (!needle || needle === 'unknown-track') {
+      return null;
+    }
+
+    let entry = this.index.get(needle) || null;
+    if (!entry) {
+      entry = [...this.index.values()]
+        .filter((item) => item.canonicalKey.includes(needle) || canonicalizeTitle(item.track?.title || '').includes(needle))
+        .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0] || null;
+    }
+
+    if (!entry) {
+      return null;
+    }
+
+    this.index.delete(entry.canonicalKey);
+    await rm(entry.filePath, { force: true }).catch(() => null);
+    await this.persistIndex();
+    return { ...entry };
   }
 
   async hydrateLocalReference(track) {

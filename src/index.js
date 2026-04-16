@@ -12,7 +12,7 @@ import { AudioCacheService } from './services/audioCache.js';
 import { LyricsService } from './services/lyrics.js';
 import { YTDlpService } from './services/ytdlp.js';
 import { PlayerManager } from './player/PlayerManager.js';
-import { truncate } from './utils/format.js';
+import { formatBytes, formatDuration, truncate } from './utils/format.js';
 
 validateConfig();
 
@@ -43,6 +43,9 @@ function helpEmbed() {
         '`/move <from> <to>` pindah antrean',
         '`/status` lihat status player',
         '`/lyrics` ambil lirik saat ini',
+        '`/cache-stats` statistik cache lokal',
+        '`/cache-list [query]` daftar lagu cache',
+        '`/cache-delete <query>` hapus lagu dari cache',
         '`/sleep <minutes>` auto stop',
         '`/reconnect` sambung ulang voice'
       ].join('\n')
@@ -77,8 +80,13 @@ function statusEmbed(player) {
     `Paused: \`${status.paused}\``,
     `Loop: \`${status.loopMode}\``,
     `Autoplay: \`${status.autoplay}\``,
-    `Queue size: \`${status.queueSize}\``
+    `Queue size: \`${status.queueSize}\``,
+    `YouTube: \`${status.youtubeStatus}\``
   ];
+
+  if (status.youtubeFailureReason) {
+    lines.push(`YouTube reason: ${truncate(status.youtubeFailureReason, 120)}`);
+  }
 
   if (status.current) {
     lines.push(`Current: **${status.current.title}**`);
@@ -120,7 +128,15 @@ client.on('interactionCreate', async (interaction) => {
             query
           });
 
-          if (result.type === 'playlist') {
+          if (result.failover) {
+            await interaction.editReply({
+              content: `YouTube sedang error. Memutar lagu dari cache lokal: **${truncate(result.tracks[0].title, 120)}**.`
+            });
+          } else if (result.fromCache) {
+            await interaction.editReply({
+              content: `Memutar dari cache lokal: **${truncate(result.tracks[0].title, 120)}**.`
+            });
+          } else if (result.type === 'playlist') {
             await interaction.editReply({
               content: `Playlist **${truncate(result.playlistTitle, 120)}** dimasukkan ke queue: ${result.tracks.length} lagu pertama.`
             });
@@ -191,6 +207,58 @@ client.on('interactionCreate', async (interaction) => {
             embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`Lyrics: ${lyric.artistName} - ${lyric.trackName}`).setDescription(text)]
           });
           player.addLyricMessage(msg);
+          break;
+        }
+        case 'cache-stats': {
+          const stats = await player.audioCache.getStats();
+          await interaction.reply({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x3498db)
+                .setTitle('Cache Stats')
+                .setDescription([
+                  `Jumlah lagu: \`${stats.totalTracks}\` / \`${stats.maxTracks}\``,
+                  `Total size: \`${formatBytes(stats.totalBytes)}\` / \`${formatBytes(stats.maxBytes)}\``
+                ].join('\n'))
+            ],
+            flags: MessageFlags.Ephemeral
+          });
+          break;
+        }
+        case 'cache-list': {
+          const query = interaction.options.getString('query') || '';
+          const result = await player.audioCache.listEntries({ query, limit: 20 });
+          const lines = result.entries.map((entry, index) =>
+            `${index + 1}. ${truncate(entry.track?.title || entry.canonicalKey, 80)} | ${formatDuration(entry.track?.duration || 0)} | ${formatBytes(entry.sizeBytes)}`
+          );
+
+          await interaction.reply({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x1abc9c)
+                .setTitle(query ? `Cache List: ${truncate(query, 80)}` : 'Cache List')
+                .setDescription(
+                  lines.length > 0
+                    ? `${lines.join('\n')}\n\nMenampilkan ${result.entries.length} dari ${result.total} lagu cache.`
+                    : 'Cache kosong atau tidak ada hasil untuk filter tersebut.'
+                )
+            ],
+            flags: MessageFlags.Ephemeral
+          });
+          break;
+        }
+        case 'cache-delete': {
+          const query = interaction.options.getString('query', true);
+          const removed = await player.audioCache.deleteByQuery(query);
+          if (!removed) {
+            await interaction.reply({ content: `Cache tidak menemukan lagu untuk "${truncate(query, 80)}".`, flags: MessageFlags.Ephemeral });
+            break;
+          }
+
+          await interaction.reply({
+            content: `Cache menghapus **${truncate(removed.track?.title || removed.canonicalKey, 120)}** (${formatBytes(removed.sizeBytes)}).`,
+            flags: MessageFlags.Ephemeral
+          });
           break;
         }
         case 'sleep': {

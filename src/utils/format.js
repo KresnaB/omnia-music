@@ -20,3 +20,21 @@ export function truncate(value, max) {
 export function nowUnixPlus(ms) {
   return Math.floor((Date.now() + ms) / 1000);
 }
+
+export function formatBytes(bytes) {
+  const value = Math.max(0, Number(bytes || 0));
+  if (value < 1024) {
+    return `${value} B`;
+  }
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}

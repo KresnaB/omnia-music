@@ -16,6 +16,15 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'disc
 import { config } from '../config.js';
 import { formatDuration, nowUnixPlus, truncate } from '../utils/format.js';
 
+function isUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function isYoutubeAvailabilityError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return /youtube|yt-dlp|cookie|cookies|403|401|forbidden|sign in|login|premiere|player response|mweb|pot|extractor|stream failed|hydrate failed|metadata failed/.test(message);
+}
+
 function cloneTrack(track) {
   return structuredClone({
     ...track,
@@ -57,6 +66,8 @@ export class GuildPlayer {
     this.playNextPromise = null;
     this.voiceChannelId = null;
     this.voiceReconnectPromise = null;
+    this.youtubeStatus = 'unknown';
+    this.youtubeFailureReason = null;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -153,8 +164,46 @@ export class GuildPlayer {
       loopMode: this.loopMode,
       autoplay: this.autoplay,
       current: this.current,
-      sleepUntil: this.sleepUntil
+      sleepUntil: this.sleepUntil,
+      youtubeStatus: this.youtubeStatus,
+      youtubeFailureReason: this.youtubeFailureReason
     };
+  }
+
+  setYoutubeHealthy() {
+    this.youtubeStatus = 'up';
+    this.youtubeFailureReason = null;
+  }
+
+  setYoutubeUnavailable(reason) {
+    this.youtubeStatus = 'down';
+    this.youtubeFailureReason = reason || 'YouTube sedang bermasalah';
+  }
+
+  getYoutubeStatusLabel() {
+    if (this.youtubeStatus === 'down') {
+      return `Error, failover ke cache${this.youtubeFailureReason ? `: ${truncate(this.youtubeFailureReason, 120)}` : ''}`;
+    }
+
+    if (this.youtubeStatus === 'up') {
+      return 'Normal';
+    }
+
+    return 'Belum diperiksa';
+  }
+
+  async buildCacheFallbackTrack({ requester, originalQuery = 'Cache Fallback' } = {}) {
+    const excludeCanonicalKeys = new Set([
+      this.current?.canonicalKey,
+      ...this.queue.map((track) => track.canonicalKey),
+      ...this.history.map((track) => track.canonicalKey)
+    ]);
+
+    return this.audioCache.getAutoplayCandidate({
+      excludeCanonicalKeys: [...excludeCanonicalKeys].filter(Boolean),
+      requester,
+      originalQuery
+    });
   }
 
   async enqueue({ member, textChannel, query }) {
@@ -164,12 +213,78 @@ export class GuildPlayer {
       throw new Error('Kamu harus berada di voice channel terlebih dahulu');
     }
 
-    // Jalankan join voice + resolve metadata secara paralel (hemat 2-4 detik)
-    const [, resolved] = await Promise.all([
-      this.ensureVoice(voiceChannel),
-      this.ytdlp.resolve(query)
-    ]);
     const requester = { id: member.id, name: member.displayName };
+    const requestStartedAt = Date.now();
+
+    if (!isUrl(query)) {
+      const localTrack = await this.audioCache.resolveQueryToTrack(query, {
+        requester,
+        addedAt: requestStartedAt,
+        originalQuery: query,
+        requestStartedAt
+      });
+
+      if (localTrack) {
+        await this.ensureVoice(voiceChannel);
+        this.insertUserTracks([localTrack]);
+        void this.publishNowPlaying('queue-update');
+
+        if (!this.current) {
+          void this.queuePlayNext('enqueue');
+        } else {
+          void this.preloadUpcomingTracks();
+        }
+
+        return {
+          type: 'single',
+          fromCache: true,
+          tracks: [localTrack]
+        };
+      }
+    }
+
+    this.youtubeStatus = 'unknown';
+    this.youtubeFailureReason = null;
+
+    // Jalankan join voice + resolve metadata secara paralel (hemat 2-4 detik)
+    let resolved;
+    try {
+      [, resolved] = await Promise.all([
+        this.ensureVoice(voiceChannel),
+        this.ytdlp.resolve(query)
+      ]);
+      this.setYoutubeHealthy();
+    } catch (error) {
+      if (!isYoutubeAvailabilityError(error)) {
+        throw error;
+      }
+
+      this.setYoutubeUnavailable(error.message);
+      const fallbackTrack = await this.buildCacheFallbackTrack({
+        requester,
+        originalQuery: `Cache failover untuk: ${query}`
+      });
+
+      if (!fallbackTrack) {
+        throw new Error(`YouTube sedang error dan cache lokal kosong: ${truncate(error.message || 'unknown error', 250)}`);
+      }
+
+      this.insertUserTracks([fallbackTrack]);
+      void this.publishNowPlaying('queue-update');
+
+      if (!this.current) {
+        void this.queuePlayNext('enqueue-failover');
+      } else {
+        void this.preloadUpcomingTracks();
+      }
+
+      return {
+        type: 'single',
+        fromCache: true,
+        failover: true,
+        tracks: [fallbackTrack]
+      };
+    }
 
     const tracks = resolved.tracks.map((track) => ({
       ...track,
@@ -468,13 +583,20 @@ export class GuildPlayer {
       return track;
     }
 
-    await this.ytdlp.hydrateMetadata(track);
     await this.audioCache.hydrateLocalReference(track);
 
     if (track.localPath) {
       track.cacheStatus = 'cached';
       track.cacheError = null;
       return track;
+    }
+
+    if (this.youtubeStatus === 'down') {
+      throw new Error('YouTube sedang error, playback dibatasi ke lagu cache lokal.');
+    }
+
+    if (track.metadataPending) {
+      await this.ytdlp.hydrateMetadata(track);
     }
 
     await this.ytdlp.ensureStreamUrl(track);
@@ -512,6 +634,20 @@ export class GuildPlayer {
     this.autoplaySeedId = seed.id;
     this.autoplayPreparePromise = (async () => {
       try {
+        if (this.youtubeStatus === 'down') {
+          const cached = await this.buildCacheFallbackTrack({
+            requester: { id: 'autoplay', name: 'Autoplay Cache' },
+            originalQuery: 'Cache Autoplay'
+          });
+
+          if (cached && this.autoplaySeedId === seed.id) {
+            this.queue.push(cached);
+            this.shuffleActive = false;
+            void this.publishNowPlaying('queue-update');
+          }
+          return;
+        }
+
         let query;
         if (seed.source === 'youtube' && seed.id && seed.id.length === 11) {
           query = `https://www.youtube.com/watch?v=${seed.id}&list=RD${seed.id}`;
@@ -640,6 +776,21 @@ export class GuildPlayer {
       }
     } catch (error) {
       console.error(`[player:${this.guildId}] playNext failed:`, error.message);
+      if (isYoutubeAvailabilityError(error)) {
+        this.setYoutubeUnavailable(error.message);
+        const fallbackTrack = await this.buildCacheFallbackTrack({
+          requester: next.requester || { id: 'autoplay', name: 'Cache Failover' },
+          originalQuery: `Cache failover untuk: ${next.title}`
+        });
+
+        if (fallbackTrack) {
+          await this.sendStatusMessage('YouTube sedang error. Bot beralih memutar lagu dari cache lokal yang tersedia.');
+          this.current = null;
+          this.queue.unshift(fallbackTrack);
+          void this.queuePlayNext('youtube-failover');
+          return;
+        }
+      }
       this.consecutiveErrors++;
 
       if (this.consecutiveErrors < 3) {
@@ -968,6 +1119,7 @@ export class GuildPlayer {
         `💾 **Source:** \`${this.current.localPath ? 'local-cache' : 'stream'}\``,
         `📦 **Cache:** ${this.getTrackCacheStatusLabel(this.current)}`,
         '',
+        `YouTube: ${this.getYoutubeStatusLabel()}`,
         `**Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? 'On' : 'Off'}\` | Queue \`${this.queue.length}\``
       ].join('\n'))
       .setFooter({ text: `Requested by ${this.current.requester?.name || 'Unknown'}` });

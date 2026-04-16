@@ -29,6 +29,11 @@ export const commands = [
     .addIntegerOption((option) => option.setName('to').setDescription('Posisi tujuan').setRequired(true)),
   new SlashCommandBuilder().setName('status').setDescription('Status player'),
   new SlashCommandBuilder().setName('lyrics').setDescription('Ambil lirik lagu aktif'),
+  new SlashCommandBuilder().setName('cache-stats').setDescription('Lihat jumlah lagu dan ukuran cache'),
+  new SlashCommandBuilder().setName('cache-list').setDescription('Lihat daftar lagu di cache')
+    .addStringOption((option) => option.setName('query').setDescription('Filter judul cache').setRequired(false)),
+  new SlashCommandBuilder().setName('cache-delete').setDescription('Hapus lagu dari cache')
+    .addStringOption((option) => option.setName('query').setDescription('Judul lagu cache yang akan dihapus').setRequired(true)),
   new SlashCommandBuilder().setName('sleep').setDescription('Set sleep timer').addIntegerOption((option) =>
     option.setName('minutes').setDescription('Jumlah menit').setRequired(true)
   ),
