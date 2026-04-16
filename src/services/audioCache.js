@@ -81,6 +81,23 @@ function waitForExit(process, label) {
   });
 }
 
+function buildHttpHeaders(track) {
+  const headers = { ...(track.httpHeaders || {}) };
+
+  if (track.webpageUrl && /^https?:\/\//.test(track.webpageUrl)) {
+    headers.Referer ??= track.webpageUrl;
+  }
+
+  headers.Origin ??= 'https://www.youtube.com';
+  headers['User-Agent'] ??=
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+
+  return Object.entries(headers)
+    .filter(([, value]) => value !== null && value !== undefined && String(value).length > 0)
+    .map(([key, value]) => `${key}: ${value}\r\n`)
+    .join('');
+}
+
 export class AudioCacheService {
   constructor() {
     this.index = new Map();
@@ -226,9 +243,8 @@ export class AudioCacheService {
   }
 
   async downloadTrack(track, canonicalKey) {
-    const target = track.webpageUrl || track.url || track.searchQuery || track.title;
-    if (!target) {
-      throw new Error('cache target kosong');
+    if (!track.streamUrl) {
+      throw new Error('direct stream URL belum tersedia untuk download cache');
     }
 
     const baseName = sanitizeFilePart(`${canonicalKey}-${track.title || 'track'}`);
@@ -236,39 +252,26 @@ export class AudioCacheService {
     const tempName = `${baseName}.${Date.now()}.part.mp3`;
     const finalPath = path.join(config.audioCacheDir, finalName);
     const tempPath = path.join(config.audioCacheDir, tempName);
-
-    const ytdlpArgs = [
-      '--default-search',
-      config.defaultSearchPlatform,
-      '--no-warnings',
-      '--no-progress',
-      '--no-playlist',
-      '-f',
-      'bestaudio/best',
-      '-o',
-      '-',
-      target
-    ];
-
-    if (config.ytDlpYoutubeArgs) {
-      ytdlpArgs.push('--extractor-args', config.ytDlpYoutubeArgs);
-    }
-
-    if (config.ytDlpPotProviderArgs) {
-      ytdlpArgs.push('--extractor-args', config.ytDlpPotProviderArgs);
-    }
-
-    if (config.ytDlpCookiesFile) {
-      ytdlpArgs.push('--cookies', config.ytDlpCookiesFile);
-    }
+    const headers = buildHttpHeaders(track);
 
     const ffmpegArgs = [
       '-nostdin',
       '-hide_banner',
       '-loglevel',
       'error',
+      '-reconnect',
+      '1',
+      '-reconnect_streamed',
+      '1',
+      '-reconnect_on_network_error',
+      '1',
+      '-reconnect_on_http_error',
+      '4xx,5xx',
+      '-reconnect_delay_max',
+      '5',
+      ...(headers ? ['-headers', headers] : []),
       '-i',
-      'pipe:0',
+      track.streamUrl,
       '-vn',
       '-sn',
       '-dn',
@@ -284,22 +287,12 @@ export class AudioCacheService {
       tempPath
     ];
 
-    const sourceProcess = spawn(config.ytDlpPath, ytdlpArgs, {
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
     const ffmpegProcess = spawn(config.ffmpegPath, ffmpegArgs, {
-      stdio: ['pipe', 'ignore', 'pipe']
+      stdio: ['ignore', 'ignore', 'pipe']
     });
-
-    sourceProcess.stdout.pipe(ffmpegProcess.stdin);
-    sourceProcess.stdout.on('error', () => null);
-    ffmpegProcess.stdin.on('error', () => null);
 
     try {
-      await Promise.all([
-        waitForExit(sourceProcess, 'yt-dlp'),
-        waitForExit(ffmpegProcess, 'ffmpeg')
-      ]);
+      await waitForExit(ffmpegProcess, 'ffmpeg');
 
       await rm(finalPath, { force: true }).catch(() => null);
       await rename(tempPath, finalPath);
@@ -322,7 +315,6 @@ export class AudioCacheService {
       await this.persistIndex();
       return entry;
     } catch (error) {
-      sourceProcess.kill('SIGKILL');
       ffmpegProcess.kill('SIGKILL');
       await rm(tempPath, { force: true }).catch(() => null);
       throw error;

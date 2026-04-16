@@ -392,8 +392,79 @@ export class GuildPlayer {
     }
   }
 
+  getTrackCacheStatusLabel(track) {
+    if (!track) {
+      return 'Tidak diketahui';
+    }
+
+    if (track.localPath) {
+      return 'Diputar dari cache lokal';
+    }
+
+    switch (track.cacheStatus) {
+      case 'downloading':
+        return 'Streaming + download cache berjalan';
+      case 'cached':
+        return 'Tersimpan di cache';
+      case 'failed':
+        return `Download cache gagal${track.cacheError ? `: ${truncate(track.cacheError, 80)}` : ''}`;
+      case 'queued':
+        return 'Menunggu download cache';
+      case 'skipped':
+        return 'Cache tidak dijalankan';
+      default:
+        return 'Streaming langsung';
+    }
+  }
+
+  async syncCurrentMessageIfTrack(track) {
+    if (!this.current || !track) {
+      return;
+    }
+
+    const currentKey = this.current.canonicalKey || this.current.id || this.current.webpageUrl || this.current.title;
+    const trackKey = track.canonicalKey || track.id || track.webpageUrl || track.title;
+    if (currentKey !== trackKey) {
+      return;
+    }
+
+    await this.publishNowPlaying('cache-update');
+  }
+
+  queueCacheDownload(track) {
+    if (!track || track.localPath) {
+      return;
+    }
+
+    track.cacheStatus = 'downloading';
+    track.cacheError = null;
+    void this.syncCurrentMessageIfTrack(track);
+
+    void this.audioCache
+      .queueDownload(track)
+      .then(async (entry) => {
+        if (!entry) {
+          track.cacheStatus = 'failed';
+          track.cacheError ??= 'download tidak berhasil';
+          await this.syncCurrentMessageIfTrack(track);
+          return;
+        }
+
+        track.cacheStatus = 'cached';
+        track.cacheError = null;
+        await this.syncCurrentMessageIfTrack(track);
+      })
+      .catch(async (error) => {
+        track.cacheStatus = 'failed';
+        track.cacheError = error.message;
+        await this.syncCurrentMessageIfTrack(track);
+      });
+  }
+
   async prepareTrackForPlayback(track, { trigger = 'play', allowBackgroundDownload = true } = {}) {
     if (track.localPath) {
+      track.cacheStatus = 'cached';
+      track.cacheError = null;
       return track;
     }
 
@@ -401,13 +472,17 @@ export class GuildPlayer {
     await this.audioCache.hydrateLocalReference(track);
 
     if (track.localPath) {
+      track.cacheStatus = 'cached';
+      track.cacheError = null;
       return track;
     }
 
     await this.ytdlp.ensureStreamUrl(track);
 
     if (allowBackgroundDownload) {
-      void this.audioCache.queueDownload(track);
+      this.queueCacheDownload(track);
+    } else {
+      track.cacheStatus = 'skipped';
     }
 
     return track;
@@ -891,6 +966,7 @@ export class GuildPlayer {
         `👤 **Uploader:** ${truncate(this.current.uploader || 'Unknown', 50)}`,
         `⏱️ **Duration:** \`${formatDuration(this.current.duration)}\``,
         `💾 **Source:** \`${this.current.localPath ? 'local-cache' : 'stream'}\``,
+        `📦 **Cache:** ${this.getTrackCacheStatusLabel(this.current)}`,
         '',
         `**Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? 'On' : 'Off'}\` | Queue \`${this.queue.length}\``
       ].join('\n'))
