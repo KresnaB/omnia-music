@@ -68,10 +68,12 @@ Struktur folder:
   docker-compose.yml
   config/
     cookies.txt
+  storage/
 ```
 
 Catatan:
 - `config/cookies.txt` di host akan dipasang sebagai `/app/config/cookies.txt` di container
+- `storage/` di host akan dipasang sebagai `/app/storage` agar cache lagu tetap tersimpan saat container di-build ulang
 - cookies opsional, jadi `YTDLP_COOKIES_FILE` boleh dikosongkan
 
 Jalankan:

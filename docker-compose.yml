@@ -9,6 +9,7 @@ services:
       - .env
     volumes:
       - ./config:/app/config
+      - ./storage:/app/storage
     depends_on:
       - bgutil-pot
 
