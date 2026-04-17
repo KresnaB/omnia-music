@@ -184,6 +184,25 @@ client.once('clientReady', async () => {
   console.log(`Omnia Music is online as ${client.user.tag}`);
 });
 
+client.on('voiceStateUpdate', (oldState, newState) => {
+  const guildId = newState.guild?.id || oldState.guild?.id;
+  if (!guildId) {
+    return;
+  }
+
+  const player = players.getIfExists(guildId);
+  if (!player?.voiceChannelId) {
+    return;
+  }
+
+  const impactedChannelIds = new Set([oldState.channelId, newState.channelId]);
+  if (!impactedChannelIds.has(player.voiceChannelId)) {
+    return;
+  }
+
+  void player.refreshEmptyChannelTimeout();
+});
+
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
     const player = playerFor(interaction);

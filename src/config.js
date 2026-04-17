@@ -25,6 +25,7 @@ export const config = {
   lrclibBaseUrl: process.env.LRCLIB_BASE_URL || 'https://lrclib.net',
   defaultVolume: toInt(process.env.DEFAULT_VOLUME, 100),
   defaultIdleTimeoutMs: toInt(process.env.DEFAULT_IDLE_TIMEOUT_MS, 10 * 60 * 1000),
+  emptyChannelTimeoutMs: toInt(process.env.EMPTY_CHANNEL_TIMEOUT_MS, 3 * 60 * 1000),
   defaultSearchPlatform: process.env.DEFAULT_SEARCH_PLATFORM || 'youtube',
   audioCacheDir: path.resolve(process.env.LOCAL_AUDIO_CACHE_DIR || './storage/audio-cache'),
   audioCacheIndexFile: path.resolve(process.env.LOCAL_AUDIO_CACHE_INDEX_FILE || './storage/audio-cache/index.json'),

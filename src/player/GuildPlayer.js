@@ -56,6 +56,7 @@ export class GuildPlayer {
     this.shuffleActive = false;
     this.preloading = null;
     this.idleTimeout = null;
+    this.emptyChannelTimeout = null;
     this.sleepTimeout = null;
     this.sleepUntil = null;
     this.lastTextChannelId = null;
@@ -399,6 +400,7 @@ export class GuildPlayer {
     this.resetIdleTimer();
     this.voiceReconnectAttempts = 0;
     this.voiceDisconnectNotified = false;
+    this.refreshEmptyChannelTimeout();
     return connection;
   }
 
@@ -511,6 +513,44 @@ export class GuildPlayer {
     this.idleTimeout = setTimeout(() => {
       void this.stop({ disconnect: true });
     }, config.defaultIdleTimeoutMs);
+  }
+
+  clearEmptyChannelTimeout() {
+    clearTimeout(this.emptyChannelTimeout);
+    this.emptyChannelTimeout = null;
+  }
+
+  scheduleEmptyChannelTimeout() {
+    if (this.emptyChannelTimeout || !this.voiceChannelId || this.stopRequested) {
+      return;
+    }
+
+    this.emptyChannelTimeout = setTimeout(() => {
+      this.emptyChannelTimeout = null;
+      void this.sendStatusMessage('Tidak ada listener di voice channel selama 3 menit. Playback dihentikan dan bot disconnect.');
+      void this.stop({ disconnect: true });
+    }, config.emptyChannelTimeoutMs);
+  }
+
+  async refreshEmptyChannelTimeout() {
+    if (!this.voiceChannelId) {
+      this.clearEmptyChannelTimeout();
+      return;
+    }
+
+    const channel = await this.client.channels.fetch(this.voiceChannelId).catch(() => null);
+    if (!channel?.isVoiceBased?.()) {
+      this.clearEmptyChannelTimeout();
+      return;
+    }
+
+    const hasHumanListener = channel.members?.some((member) => !member.user?.bot);
+    if (hasHumanListener) {
+      this.clearEmptyChannelTimeout();
+      return;
+    }
+
+    this.scheduleEmptyChannelTimeout();
   }
 
   handleTrackCompletion(track) {
@@ -1270,6 +1310,7 @@ export class GuildPlayer {
     this.voiceReconnectAttempts = 0;
     this.voiceDisconnectNotified = false;
     this.pausedForVoiceReconnect = false;
+    this.clearEmptyChannelTimeout();
     clearTimeout(this.sleepTimeout);
     this.sleepUntil = null;
     this.player.stop(true);
