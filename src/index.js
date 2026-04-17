@@ -25,6 +25,8 @@ const audioCache = new AudioCacheService();
 const lyrics = new LyricsService();
 const players = new PlayerManager({ client, ytdlp, lyrics, audioCache });
 const AUTO_DELETE_MS = 5000;
+const LOGIN_RETRY_BASE_DELAY_MS = 5_000;
+const LOGIN_RETRY_MAX_DELAY_MS = 60_000;
 
 function helpEmbed() {
   return new EmbedBuilder()
@@ -59,6 +61,73 @@ async function registerCommands() {
     : Routes.applicationCommands(config.clientId);
 
   await rest.put(route, { body: commands });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientNetworkError(error) {
+  const text = `${error?.code || ''} ${error?.name || ''} ${error?.message || ''}`.toLowerCase();
+  return /aborted|network|socket|websocket|econnreset|etimedout|eai_again|enotfound|ecanceled|gateway|connect|disconnect/.test(text);
+}
+
+async function loginWithRetry() {
+  let attempt = 0;
+
+  while (true) {
+    try {
+      await client.login(config.discordToken);
+      return;
+    } catch (error) {
+      attempt += 1;
+      const delayMs = Math.min(LOGIN_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1), LOGIN_RETRY_MAX_DELAY_MS);
+      console.error(`[discord] login failed (attempt ${attempt})`, error);
+      await delay(delayMs);
+    }
+  }
+}
+
+function registerRuntimeHandlers() {
+  process.on('unhandledRejection', (reason) => {
+    console.error('[process] unhandled rejection', reason);
+  });
+
+  process.on('uncaughtException', (error) => {
+    const transient = isTransientNetworkError(error);
+    console.error(`[process] uncaught exception${transient ? ' (transient-network)' : ''}`, error);
+  });
+
+  client.on('error', (error) => {
+    console.error('[discord] client error', error);
+  });
+
+  client.on('warn', (message) => {
+    console.warn('[discord] warn', message);
+  });
+
+  client.on('shardDisconnect', (event, shardId) => {
+    console.warn(`[discord] shard ${shardId} disconnected`, {
+      code: event.code,
+      reason: event.reason
+    });
+  });
+
+  client.on('shardError', (error, shardId) => {
+    console.error(`[discord] shard ${shardId} error`, error);
+  });
+
+  client.on('shardReconnecting', (shardId) => {
+    console.warn(`[discord] shard ${shardId} reconnecting`);
+  });
+
+  client.on('shardResume', (shardId, replayedEvents) => {
+    console.log(`[discord] shard ${shardId} resumed (${replayedEvents} replayed events)`);
+  });
+
+  client.on('invalidated', () => {
+    console.error('[discord] session invalidated');
+  });
 }
 
 function playerFor(interaction) {
@@ -106,7 +175,12 @@ function scheduleInteractionDelete(interaction, delayMs = AUTO_DELETE_MS) {
 }
 
 client.once('clientReady', async () => {
-  await registerCommands();
+  try {
+    await registerCommands();
+  } catch (error) {
+    console.error('[discord] command registration failed', error);
+  }
+
   console.log(`Omnia Music is online as ${client.user.tag}`);
 });
 
@@ -350,4 +424,5 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.login(config.discordToken);
+registerRuntimeHandlers();
+void loginWithRetry();

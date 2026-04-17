@@ -33,6 +33,10 @@ function cloneTrack(track) {
   });
 }
 
+const VOICE_RECONNECT_BASE_DELAY_MS = 5_000;
+const VOICE_RECONNECT_MAX_DELAY_MS = 60_000;
+const VOICE_RECONNECT_MAX_ATTEMPTS = 12;
+
 export class GuildPlayer {
   constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
     this.client = client;
@@ -66,6 +70,10 @@ export class GuildPlayer {
     this.playNextPromise = null;
     this.voiceChannelId = null;
     this.voiceReconnectPromise = null;
+    this.voiceReconnectTimer = null;
+    this.voiceReconnectAttempts = 0;
+    this.voiceDisconnectNotified = false;
+    this.pausedForVoiceReconnect = false;
     this.youtubeStatus = 'unknown';
     this.youtubeFailureReason = null;
     this.nowPlayingUpdatePromise = Promise.resolve();
@@ -329,6 +337,8 @@ export class GuildPlayer {
 
   async ensureVoice(voiceChannel) {
     this.voiceChannelId = voiceChannel.id;
+    clearTimeout(this.voiceReconnectTimer);
+    this.voiceReconnectTimer = null;
     let connection = getVoiceConnection(this.guildId);
 
     if (connection) {
@@ -387,6 +397,8 @@ export class GuildPlayer {
     }
 
     this.resetIdleTimer();
+    this.voiceReconnectAttempts = 0;
+    this.voiceDisconnectNotified = false;
     return connection;
   }
 
@@ -396,6 +408,14 @@ export class GuildPlayer {
     }
 
     connection.__omniaHandlersAttached = true;
+    connection.on(VoiceConnectionStatus.Ready, () => {
+      this.voiceReconnectAttempts = 0;
+      this.voiceDisconnectNotified = false;
+      if (this.current && this.pausedForVoiceReconnect) {
+        this.player.unpause();
+      }
+      this.pausedForVoiceReconnect = false;
+    });
     connection.on(VoiceConnectionStatus.Disconnected, () => {
       void this.handleVoiceDisconnected(connection);
     });
@@ -406,6 +426,10 @@ export class GuildPlayer {
       return;
     }
 
+    if (!this.pausedForVoiceReconnect && this.player.state.status === AudioPlayerStatus.Playing) {
+      this.pausedForVoiceReconnect = this.player.pause();
+    }
+
     try {
       await Promise.race([
         entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
@@ -413,39 +437,72 @@ export class GuildPlayer {
       ]);
       return;
     } catch {
-      if (this.voiceReconnectPromise) {
-        await this.voiceReconnectPromise;
-        return;
-      }
-
-      this.voiceReconnectPromise = this.recoverVoiceConnection().finally(() => {
-        this.voiceReconnectPromise = null;
-      });
-      await this.voiceReconnectPromise;
+      this.scheduleVoiceReconnect();
     }
   }
 
-  async recoverVoiceConnection() {
+  scheduleVoiceReconnect() {
+    if (this.voiceReconnectPromise || this.voiceReconnectTimer || this.stopRequested || !this.voiceChannelId) {
+      return;
+    }
+
+    const attempt = this.voiceReconnectAttempts + 1;
+    const delayMs = Math.min(
+      VOICE_RECONNECT_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1),
+      VOICE_RECONNECT_MAX_DELAY_MS
+    );
+
+    this.voiceReconnectTimer = setTimeout(() => {
+      this.voiceReconnectTimer = null;
+      this.voiceReconnectPromise = this.recoverVoiceConnection(attempt).finally(() => {
+        this.voiceReconnectPromise = null;
+      });
+      void this.voiceReconnectPromise;
+    }, delayMs);
+
+    if (!this.voiceDisconnectNotified) {
+      this.voiceDisconnectNotified = true;
+      void this.sendStatusMessage('Koneksi voice terputus. Bot akan mencoba reconnect otomatis.');
+    }
+  }
+
+  async recoverVoiceConnection(attempt = this.voiceReconnectAttempts + 1) {
     if (!this.voiceChannelId) {
       return;
     }
 
     const channel = await this.client.channels.fetch(this.voiceChannelId).catch(() => null);
     if (!channel?.isVoiceBased?.()) {
+      this.voiceReconnectAttempts = 0;
+      this.pausedForVoiceReconnect = false;
       await this.sendStatusMessage('Voice channel tidak ditemukan untuk reconnect otomatis.');
       return;
     }
 
     try {
+      this.voiceReconnectAttempts = attempt;
       const connection = getVoiceConnection(this.guildId);
       connection?.destroy();
       await this.ensureVoice(channel);
-      if (this.current) {
+      if (this.current && this.pausedForVoiceReconnect) {
         this.player.unpause();
       }
+      this.pausedForVoiceReconnect = false;
       await this.sendStatusMessage('Koneksi voice terputus. Berhasil reconnect otomatis.');
     } catch (error) {
-      await this.sendStatusMessage(`Koneksi voice terputus dan gagal reconnect otomatis: ${error.message}`);
+      const shouldRetry = attempt < VOICE_RECONNECT_MAX_ATTEMPTS && !this.stopRequested;
+      if (shouldRetry) {
+        await this.sendStatusMessage(
+          `Reconnect voice otomatis gagal (${attempt}/${VOICE_RECONNECT_MAX_ATTEMPTS}): ${truncate(error.message || 'unknown error', 160)}. Akan coba lagi.`
+        );
+        this.scheduleVoiceReconnect();
+        return;
+      }
+
+      this.pausedForVoiceReconnect = false;
+      await this.sendStatusMessage(
+        `Reconnect voice otomatis gagal setelah ${attempt} percobaan: ${truncate(error.message || 'unknown error', 300)}. Gunakan /reconnect atau /play lagi.`
+      );
     }
   }
 
@@ -1208,6 +1265,11 @@ export class GuildPlayer {
     this.consecutiveErrors = 0;
     this.playNonce += 1;
     this.stopRequested = true;
+    clearTimeout(this.voiceReconnectTimer);
+    this.voiceReconnectTimer = null;
+    this.voiceReconnectAttempts = 0;
+    this.voiceDisconnectNotified = false;
+    this.pausedForVoiceReconnect = false;
     clearTimeout(this.sleepTimeout);
     this.sleepUntil = null;
     this.player.stop(true);
