@@ -511,6 +511,7 @@ export class GuildPlayer {
   resetIdleTimer() {
     clearTimeout(this.idleTimeout);
     this.idleTimeout = setTimeout(() => {
+      void this.sendStatusMessage('Tidak ada lagu yang diputar selama 3 menit. Bot disconnect otomatis.');
       void this.stop({ disconnect: true });
     }, config.defaultIdleTimeoutMs);
   }
@@ -587,6 +588,59 @@ export class GuildPlayer {
       await this.currentMessage.delete().catch(() => null);
       this.currentMessage = null;
     }
+  }
+
+  buildDisabledControlRows() {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('player:toggle').setLabel('Pause').setStyle(ButtonStyle.Primary).setDisabled(true),
+        new ButtonBuilder().setCustomId('player:skip').setLabel('Skip').setStyle(ButtonStyle.Secondary).setDisabled(true),
+        new ButtonBuilder().setCustomId('player:stop').setLabel('Stop').setStyle(ButtonStyle.Danger).setDisabled(true),
+        new ButtonBuilder().setCustomId('player:shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary).setDisabled(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('player:autoplay').setLabel('Autoplay').setStyle(ButtonStyle.Secondary).setDisabled(true),
+        new ButtonBuilder().setCustomId('player:loop').setLabel('Loop').setStyle(ButtonStyle.Secondary).setDisabled(true),
+        new ButtonBuilder().setCustomId('player:queue').setLabel('Queue').setStyle(ButtonStyle.Secondary).setDisabled(true),
+        new ButtonBuilder().setCustomId('player:lyrics').setLabel('Lyrics').setStyle(ButtonStyle.Secondary).setDisabled(true)
+      )
+    ];
+  }
+
+  async publishIdleMessage() {
+    const runUpdate = async () => {
+      if (!this.lastTextChannelId) return;
+      const channel = await this.client.channels.fetch(this.lastTextChannelId).catch(() => null);
+      if (!channel?.isTextBased()) return;
+
+      const embed = new EmbedBuilder()
+        .setColor(0xf1c40f)
+        .setAuthor({ name: 'Player Idle' })
+        .setTitle('Tidak ada lagu yang sedang diputar')
+        .setDescription([
+          'Queue habis dan tidak ada lagu berikutnya yang bisa diputar.',
+          '',
+          `Bot akan disconnect otomatis dalam <t:${nowUnixPlus(Math.floor(config.emptyChannelTimeoutMs / 1000))}:R> jika belum ada lagu lagi.`
+        ].join('\n'));
+      const components = this.buildDisabledControlRows();
+
+      if (this.currentMessage) {
+        try {
+          this.currentMessage = await this.currentMessage.edit({ embeds: [embed], components });
+          return;
+        } catch {
+          this.currentMessage = null;
+        }
+      }
+
+      this.currentMessage = await channel.send({ embeds: [embed], components });
+    };
+
+    this.nowPlayingUpdatePromise = this.nowPlayingUpdatePromise
+      .then(runUpdate, runUpdate)
+      .catch(() => null);
+
+    await this.nowPlayingUpdatePromise;
   }
 
   async preloadUpcomingTracks() {
@@ -832,7 +886,7 @@ export class GuildPlayer {
     this.current = next || null;
 
     if (!next) {
-      await this.closePlayerMessage();
+      await this.publishIdleMessage();
       this.resetIdleTimer();
       return;
     }
