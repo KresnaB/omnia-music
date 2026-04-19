@@ -12,7 +12,7 @@ import { AudioCacheService } from './services/audioCache.js';
 import { LyricsService } from './services/lyrics.js';
 import { YTDlpService } from './services/ytdlp.js';
 import { PlayerManager } from './player/PlayerManager.js';
-import { formatBytes, formatDuration, truncate } from './utils/format.js';
+import { formatBytes, formatDuration, isTransientNetworkError, truncate } from './utils/format.js';
 
 validateConfig();
 
@@ -27,6 +27,7 @@ const players = new PlayerManager({ client, ytdlp, lyrics, audioCache });
 const AUTO_DELETE_MS = 5000;
 const LOGIN_RETRY_BASE_DELAY_MS = 5_000;
 const LOGIN_RETRY_MAX_DELAY_MS = 60_000;
+let networkOutageDetected = false;
 
 function helpEmbed() {
   return new EmbedBuilder()
@@ -67,10 +68,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isTransientNetworkError(error) {
-  const text = `${error?.code || ''} ${error?.name || ''} ${error?.message || ''}`.toLowerCase();
-  return /aborted|network|socket|websocket|econnreset|etimedout|eai_again|enotfound|ecanceled|gateway|connect|disconnect/.test(text);
-}
+
 
 async function loginWithRetry() {
   let attempt = 0;
@@ -95,10 +93,12 @@ function registerRuntimeHandlers() {
 
   process.on('uncaughtException', (error) => {
     const transient = isTransientNetworkError(error);
+    if (transient) networkOutageDetected = true;
     console.error(`[process] uncaught exception${transient ? ' (transient-network)' : ''}`, error);
   });
 
   client.on('error', (error) => {
+    if (isTransientNetworkError(error)) networkOutageDetected = true;
     console.error('[discord] client error', error);
   });
 
@@ -123,6 +123,7 @@ function registerRuntimeHandlers() {
 
   client.on('shardResume', (shardId, replayedEvents) => {
     console.log(`[discord] shard ${shardId} resumed (${replayedEvents} replayed events)`);
+    void broadcastNetworkRecovery();
   });
 
   client.on('invalidated', () => {
@@ -182,6 +183,7 @@ client.once('clientReady', async () => {
   }
 
   console.log(`Omnia Music is online as ${client.user.tag}`);
+  void broadcastNetworkRecovery();
 });
 
 client.on('voiceStateUpdate', (oldState, newState) => {
@@ -202,6 +204,19 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 
   void player.refreshEmptyChannelTimeout();
 });
+
+async function broadcastNetworkRecovery() {
+  if (!networkOutageDetected) return;
+  networkOutageDetected = false;
+  console.log('[network] Recovery detected. Notifying active players...');
+
+  const activePlayers = [...players.players.values()];
+  for (const player of activePlayers) {
+    player.notifyNetworkRestored().catch((err) => {
+      console.error(`[network] Failed to notify guild ${player.guildId}:`, err.message);
+    });
+  }
+}
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {

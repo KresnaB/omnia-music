@@ -14,7 +14,7 @@ import {
 } from '@discordjs/voice';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
 import { config } from '../config.js';
-import { formatDuration, nowUnixPlus, truncate } from '../utils/format.js';
+import { formatDuration, isTransientNetworkError, nowUnixPlus, truncate } from '../utils/format.js';
 
 function isUrl(value) {
   return /^https?:\/\//i.test(String(value || '').trim());
@@ -156,9 +156,14 @@ export class GuildPlayer {
       }
       
       this.consecutiveErrors++;
+      const isNetwork = isTransientNetworkError(error);
+      const errorMessage = isNetwork 
+        ? '⚠️ Gangguan jaringan terdeteksi. Mencoba lagi...' 
+        : `Playback error: ${error.message}. Mencoba lagu berikutnya...`;
+
       if (this.consecutiveErrors < 3) {
-        await this.sendStatusMessage(`Playback error: ${error.message}. Mencoba lagu berikutnya...`);
-        void this.queuePlayNext('error');
+        await this.sendStatusMessage(errorMessage);
+        void this.queuePlayNext(isNetwork ? 'network-retry' : 'error');
       } else {
         await this.sendStatusMessage(`Terlalu banyak error berturut-turut. Playback dihentikan.`);
         await this.stop();
@@ -790,7 +795,7 @@ export class GuildPlayer {
       return;
     }
 
-    this.autoplaySeedId = seed.id;
+    this.autoplaySeedId = seed.id || seed.canonicalKey;
     this.autoplayPreparePromise = (async () => {
       try {
         if (this.youtubeStatus === 'down') {
@@ -799,7 +804,7 @@ export class GuildPlayer {
             originalQuery: 'Cache Autoplay'
           });
 
-          if (cached && this.autoplaySeedId === seed.id) {
+          if (cached && this.autoplaySeedId === (seed.id || seed.canonicalKey)) {
             this.queue.push(cached);
             this.shuffleActive = false;
             void this.publishNowPlaying('queue-update');
@@ -834,13 +839,19 @@ export class GuildPlayer {
         await this.ytdlp.hydrate(prepared);
 
         // Abaikan push jika referensi seed sudah di-reset oleh enqueue manual user
-        if (this.autoplaySeedId !== seed.id) {
+        if (this.autoplaySeedId !== (seed.id || seed.canonicalKey)) {
           return;
         }
 
-        const existsInQueue = this.queue.some((track) => track.id === prepared.id);
-        const existsInHistory = this.history.some((track) => track.id === prepared.id);
-        const isCurrent = this.current?.id === prepared.id;
+        const isDuplicate = (track) => {
+          if (track.id && prepared.id && track.id === prepared.id) return true;
+          if (track.canonicalKey && prepared.canonicalKey && track.canonicalKey === prepared.canonicalKey) return true;
+          return false;
+        };
+
+        const existsInQueue = this.queue.some(isDuplicate);
+        const existsInHistory = this.history.some(isDuplicate);
+        const isCurrent = this.current && isDuplicate(this.current);
 
         if (!existsInQueue && !existsInHistory && !isCurrent) {
           this.queue.push(prepared);
@@ -935,7 +946,12 @@ export class GuildPlayer {
       }
     } catch (error) {
       console.error(`[player:${this.guildId}] playNext failed:`, error.message);
-      if (isYoutubeAvailabilityError(error)) {
+      if (isYoutubeAvailabilityError(error) || isTransientNetworkError(error)) {
+        const isNetwork = isTransientNetworkError(error);
+        if (isNetwork) {
+          await this.sendStatusMessage('⚠️ Gangguan jaringan terdeteksi saat menyiapkan lagu. Mencoba beralih ke cache...');
+        }
+        
         this.setYoutubeUnavailable(error.message);
         const fallbackTrack = await this.buildCacheFallbackTrack({
           requester: next.requester || { id: 'autoplay', name: 'Cache Failover' },
@@ -943,7 +959,9 @@ export class GuildPlayer {
         });
 
         if (fallbackTrack) {
-          await this.sendStatusMessage('YouTube sedang error. Bot beralih memutar lagu dari cache lokal yang tersedia.');
+          if (!isNetwork) {
+            await this.sendStatusMessage('YouTube sedang error. Bot beralih memutar lagu dari cache lokal yang tersedia.');
+          }
           this.current = null;
           this.queue.unshift(fallbackTrack);
           void this.queuePlayNext('youtube-failover');
@@ -953,9 +971,14 @@ export class GuildPlayer {
       this.consecutiveErrors++;
 
       if (this.consecutiveErrors < 3) {
-        await this.sendStatusMessage(`Gagal memutar "${next.title}": ${error.message}. Melewati...`);
+        const isNetwork = isTransientNetworkError(error);
+        await this.sendStatusMessage(
+          isNetwork 
+            ? '⚠️ Gagal memutar karena gangguan jaringan. Mencoba lagu berikutnya...'
+            : `Gagal memutar "${next.title}": ${error.message}. Melewati...`
+        );
         // Tunggu sebentar sebelum skip otomatis untuk menghindari spam API gila-gilaan
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 2000));
         void this.queuePlayNext('fallback');
         return;
       } else {
@@ -1321,6 +1344,19 @@ export class GuildPlayer {
     const channel = await this.client.channels.fetch(this.lastTextChannelId).catch(() => null);
     if (channel?.isTextBased()) {
       await channel.send({ content: truncate(content, 1900) }).catch(() => null);
+    }
+  }
+
+  async notifyNetworkRestored() {
+    if (!this.lastTextChannelId || (!this.current && this.queue.length === 0)) {
+      return;
+    }
+
+    await this.sendStatusMessage('⚠️ **Koneksi internet terganggu.** Barusan terjadi gangguan jaringan (*network outage*) yang menyebabkan playback/pencarian terganggu. Sekarang koneksi sudah kembali normal.');
+    
+    // Jika player idle tetapi ada antrean, coba lanjut
+    if (this.player.state.status === AudioPlayerStatus.Idle && this.queue.length > 0 && !this.stopRequested) {
+      void this.queuePlayNext('network-recovery');
     }
   }
 

@@ -243,9 +243,26 @@ export class AudioCacheService {
       return cloneTrackFromEntry(exact, overrides);
     }
 
+    const needleWords = needle.split(/[^a-z0-9]+/).filter((w) => w.length > 1);
     const partial = [...this.index.values()]
-      .filter((entry) => entry.canonicalKey.includes(needle) || needle.includes(entry.canonicalKey))
-      .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0];
+      .map((entry) => {
+        const entryWords = entry.canonicalKey.split(/[^a-z0-9]+/).filter((w) => w.length > 1);
+        let score = 0;
+
+        if (entry.canonicalKey.includes(needle)) {
+          score = 80;
+        } else if (needleWords.length > 0 && needleWords.every((nw) => entry.canonicalKey.includes(nw))) {
+          score = 70;
+        } else if (needle.includes(entry.canonicalKey) && entry.canonicalKey.length >= 3) {
+          score = 60;
+        } else if (entryWords.length >= 2 && entryWords.every((ew) => needle.includes(ew))) {
+          score = 50;
+        }
+
+        return { entry, score };
+      })
+      .filter((m) => m.score > 0)
+      .sort((a, b) => b.score - a.score || b.entry.lastAccessedAt - a.entry.lastAccessedAt)[0]?.entry;
 
     if (!partial) {
       return null;

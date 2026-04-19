@@ -38,3 +38,8 @@ export function formatBytes(bytes) {
 
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
+
+export function isTransientNetworkError(error) {
+  const text = `${error?.code || ''} ${error?.name || ''} ${error?.message || ''}`.toLowerCase();
+  return /aborted|network|socket|websocket|econnreset|etimedout|eai_again|enotfound|ecanceled|gateway|connect|disconnect|getaddrinfo|name resolution|googlevideo/.test(text);
+}
