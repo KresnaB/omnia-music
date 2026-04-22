@@ -44,6 +44,7 @@ function getTrackIdentity(track) {
 const VOICE_RECONNECT_BASE_DELAY_MS = 5_000;
 const VOICE_RECONNECT_MAX_DELAY_MS = 60_000;
 const VOICE_RECONNECT_MAX_ATTEMPTS = 12;
+const YOUTUBE_PROBE_COOLDOWN_MS = 2 * 60 * 1000;
 
 export class GuildPlayer {
   constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
@@ -85,6 +86,8 @@ export class GuildPlayer {
     this.pausedForVoiceReconnect = false;
     this.youtubeStatus = 'unknown';
     this.youtubeFailureReason = null;
+    this.youtubeProbePromise = null;
+    this.youtubeLastCheckedAt = 0;
     this.nowPlayingUpdatePromise = Promise.resolve();
 
     this.player = createAudioPlayer({
@@ -203,6 +206,66 @@ export class GuildPlayer {
     this.youtubeFailureReason = reason || 'YouTube sedang bermasalah';
   }
 
+  waitForPlaybackStart(timeoutMs = 5_000) {
+    if (this.player.state.status === AudioPlayerStatus.Playing || this.player.state.status === AudioPlayerStatus.Paused) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('playback start timeout'));
+      }, timeoutMs);
+
+      const onPlaying = () => {
+        cleanup();
+        resolve();
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.player.off(AudioPlayerStatus.Playing, onPlaying);
+      };
+
+      this.player.on(AudioPlayerStatus.Playing, onPlaying);
+    });
+  }
+
+  scheduleYoutubeAvailabilityProbe({ waitForPlaybackStart = false } = {}) {
+    if (this.youtubeProbePromise) {
+      return this.youtubeProbePromise;
+    }
+
+    if (Date.now() - this.youtubeLastCheckedAt < YOUTUBE_PROBE_COOLDOWN_MS) {
+      return Promise.resolve();
+    }
+
+    this.youtubeProbePromise = (async () => {
+      try {
+        if (waitForPlaybackStart) {
+          await this.waitForPlaybackStart().catch(() => null);
+        }
+
+        await this.ytdlp.resolve('ytsearch1:music');
+        this.setYoutubeHealthy();
+      } catch (error) {
+        if (isYoutubeAvailabilityError(error)) {
+          this.setYoutubeUnavailable(error.message);
+        } else {
+          console.warn(`[player:${this.guildId}] youtube probe failed:`, error.message);
+        }
+      } finally {
+        this.youtubeLastCheckedAt = Date.now();
+        this.youtubeProbePromise = null;
+        if (this.current) {
+          void this.publishNowPlaying('youtube-probe');
+        }
+      }
+    })();
+
+    return this.youtubeProbePromise;
+  }
+
   getYoutubeStatusLabel() {
     if (this.youtubeStatus === 'down') {
       return `Error, failover ke cache${this.youtubeFailureReason ? `: ${truncate(this.youtubeFailureReason, 120)}` : ''}`;
@@ -215,12 +278,23 @@ export class GuildPlayer {
     return 'Belum diperiksa';
   }
 
-  async buildCacheFallbackTrack({ requester, originalQuery = 'Cache Fallback' } = {}) {
+  async buildCacheFallbackTrack({ requester, originalQuery = 'Cache Fallback', preferredQuery = '' } = {}) {
     const excludeCanonicalKeys = new Set([
       this.current?.canonicalKey,
       ...this.queue.map((track) => track.canonicalKey),
       ...this.history.map((track) => track.canonicalKey)
     ]);
+
+    const bestMatch = await this.audioCache.getBestMatchTrack({
+      query: preferredQuery || originalQuery,
+      excludeCanonicalKeys: [...excludeCanonicalKeys].filter(Boolean),
+      requester,
+      originalQuery
+    });
+
+    if (bestMatch) {
+      return bestMatch;
+    }
 
     return this.audioCache.getAutoplayCandidate({
       excludeCanonicalKeys: [...excludeCanonicalKeys].filter(Boolean),
@@ -248,6 +322,7 @@ export class GuildPlayer {
       });
 
       if (localTrack) {
+        const isFirstPlay = !this.current;
         await this.ensureVoice(voiceChannel);
         this.insertUserTracks([localTrack]);
         void this.publishNowPlaying('queue-update');
@@ -258,11 +333,42 @@ export class GuildPlayer {
           void this.preloadUpcomingTracks();
         }
 
+        if (isFirstPlay) {
+          void this.scheduleYoutubeAvailabilityProbe({ waitForPlaybackStart: true });
+        }
+
         return {
           type: 'single',
           fromCache: true,
           tracks: [localTrack]
         };
+      }
+
+      if (this.youtubeStatus === 'down') {
+        const fallbackTrack = await this.buildCacheFallbackTrack({
+          requester,
+          originalQuery: `Cache failover untuk: ${query}`,
+          preferredQuery: query
+        });
+
+        if (fallbackTrack) {
+          await this.ensureVoice(voiceChannel);
+          this.insertUserTracks([fallbackTrack]);
+          void this.publishNowPlaying('queue-update');
+
+          if (!this.current) {
+            void this.queuePlayNext('enqueue-failover');
+          } else {
+            void this.preloadUpcomingTracks();
+          }
+
+          return {
+            type: 'single',
+            fromCache: true,
+            failover: true,
+            tracks: [fallbackTrack]
+          };
+        }
       }
     }
 
@@ -285,7 +391,8 @@ export class GuildPlayer {
       this.setYoutubeUnavailable(error.message);
       const fallbackTrack = await this.buildCacheFallbackTrack({
         requester,
-        originalQuery: `Cache failover untuk: ${query}`
+        originalQuery: `Cache failover untuk: ${query}`,
+        preferredQuery: query
       });
 
       if (!fallbackTrack) {
@@ -810,7 +917,8 @@ export class GuildPlayer {
         if (this.youtubeStatus === 'down') {
           const cached = await this.buildCacheFallbackTrack({
             requester: { id: 'autoplay', name: 'Autoplay Cache' },
-            originalQuery: 'Cache Autoplay'
+            originalQuery: 'Cache Autoplay',
+            preferredQuery: `${seed.title || ''} ${seed.uploader || ''}`.trim()
           });
 
           if (cached && this.autoplaySeedId === seedKey) {
@@ -964,7 +1072,8 @@ export class GuildPlayer {
         this.setYoutubeUnavailable(error.message);
         const fallbackTrack = await this.buildCacheFallbackTrack({
           requester: next.requester || { id: 'autoplay', name: 'Cache Failover' },
-          originalQuery: `Cache failover untuk: ${next.title}`
+          originalQuery: `Cache failover untuk: ${next.title}`,
+          preferredQuery: `${next.title || ''} ${next.uploader || ''} ${next.originalQuery || ''}`.trim()
         });
 
         if (fallbackTrack) {

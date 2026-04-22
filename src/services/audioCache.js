@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import Fuse from 'fuse.js';
 import { config } from '../config.js';
 
 const CANONICAL_NOISE_PATTERNS = [
@@ -48,6 +49,22 @@ function canonicalizeTitle(value) {
     .trim();
 
   return normalized || 'unknown-track';
+}
+
+function createSearchDocument(entry) {
+  const title = String(entry.track?.title || '');
+  const uploader = String(entry.track?.uploader || '');
+  const canonicalTitle = canonicalizeTitle(title);
+
+  return {
+    canonicalKey: entry.canonicalKey,
+    title,
+    uploader,
+    canonicalTitle,
+    combined: `${title} ${uploader} ${entry.canonicalKey}`.trim(),
+    normalizedCombined: `${canonicalTitle} ${canonicalizeTitle(uploader)} ${entry.canonicalKey}`.trim(),
+    entry
+  };
 }
 
 function cloneTrackMeta(track) {
@@ -119,6 +136,44 @@ export class AudioCacheService {
     this.downloads = new Map();
     this.readyPromise = null;
     this.persistPromise = Promise.resolve();
+    this.searchDocs = [];
+    this.fuse = null;
+  }
+
+  rebuildSearchIndex() {
+    this.searchDocs = [...this.index.values()].map((entry) => createSearchDocument(entry));
+    this.fuse = new Fuse(this.searchDocs, {
+      includeScore: true,
+      shouldSort: true,
+      ignoreLocation: true,
+      threshold: 0.42,
+      minMatchCharLength: 2,
+      keys: [
+        { name: 'title', weight: 0.45 },
+        { name: 'uploader', weight: 0.1 },
+        { name: 'canonicalKey', weight: 0.2 },
+        { name: 'canonicalTitle', weight: 0.15 },
+        { name: 'combined', weight: 0.05 },
+        { name: 'normalizedCombined', weight: 0.05 }
+      ]
+    });
+  }
+
+  searchEntries(query, { excludeCanonicalKeys = [], limit = 20, maxScore = 0.42 } = {}) {
+    const needle = String(query || '').trim();
+    if (!needle || !this.fuse) {
+      return [];
+    }
+
+    const excluded = new Set(excludeCanonicalKeys.filter(Boolean));
+    return this.fuse.search(needle, { limit: Math.max(limit * 3, limit) })
+      .filter((result) => !excluded.has(result.item.canonicalKey))
+      .filter((result) => result.score === undefined || result.score <= maxScore)
+      .slice(0, limit)
+      .map((result) => ({
+        entry: result.item.entry,
+        score: result.score ?? 0
+      }));
   }
 
   async init() {
@@ -169,6 +224,7 @@ export class AudioCacheService {
 
     await this.persistIndex();
     await this.enforceLimits();
+    this.rebuildSearchIndex();
   }
 
   async persistIndex() {
@@ -205,27 +261,15 @@ export class AudioCacheService {
     };
   }
 
-  async listEntries({ query = '', limit = 20 } = {}) {
+  async listEntries({ query = '', limit = 20, offset = 0 } = {}) {
     await this.init();
-    const needle = canonicalizeTitle(query || '');
-    const entries = [...this.index.values()]
-      .filter((entry) => {
-        if (!query) {
-          return true;
-        }
-
-        const title = canonicalizeTitle(entry.track?.title || '');
-        return (
-          entry.canonicalKey === needle ||
-          entry.canonicalKey.includes(needle) ||
-          title.includes(needle)
-        );
-      })
-      .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
+    const entries = query
+      ? this.searchEntries(query, { limit: this.index.size || limit, maxScore: 0.5 }).map((result) => result.entry)
+      : [...this.index.values()].sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
 
     return {
       total: entries.length,
-      entries: entries.slice(0, limit).map((entry) => ({ ...entry }))
+      entries: entries.slice(offset, offset + limit).map((entry) => ({ ...entry }))
     };
   }
 
@@ -243,26 +287,7 @@ export class AudioCacheService {
       return cloneTrackFromEntry(exact, overrides);
     }
 
-    const needleWords = needle.split(/[^a-z0-9]+/).filter((w) => w.length > 1);
-    const partial = [...this.index.values()]
-      .map((entry) => {
-        const entryWords = entry.canonicalKey.split(/[^a-z0-9]+/).filter((w) => w.length > 1);
-        let score = 0;
-
-        if (entry.canonicalKey.includes(needle)) {
-          score = 80;
-        } else if (needleWords.length > 0 && needleWords.every((nw) => entry.canonicalKey.includes(nw))) {
-          score = 70;
-        } else if (needle.includes(entry.canonicalKey) && entry.canonicalKey.length >= 3) {
-          score = 60;
-        } else if (entryWords.length >= 2 && entryWords.every((ew) => needle.includes(ew))) {
-          score = 50;
-        }
-
-        return { entry, score };
-      })
-      .filter((m) => m.score > 0)
-      .sort((a, b) => b.score - a.score || b.entry.lastAccessedAt - a.entry.lastAccessedAt)[0]?.entry;
+    const partial = this.searchEntries(query, { limit: 1, maxScore: 0.42 })[0]?.entry;
 
     if (!partial) {
       return null;
@@ -271,6 +296,29 @@ export class AudioCacheService {
     partial.lastAccessedAt = Date.now();
     await this.persistIndex();
     return cloneTrackFromEntry(partial, overrides);
+  }
+
+  async getBestMatchTrack({ query = '', excludeCanonicalKeys = [], minScore = 25, requester, originalQuery = 'Cache Fallback' } = {}) {
+    await this.init();
+    const maxScore = Math.max(0.05, Math.min(0.75, 1 - (minScore / 100)));
+    const chosen = this.searchEntries(query, {
+      excludeCanonicalKeys,
+      limit: 1,
+      maxScore
+    })[0]?.entry;
+    if (!chosen) {
+      return null;
+    }
+
+    chosen.lastAccessedAt = Date.now();
+    await this.persistIndex();
+    return cloneTrackFromEntry(chosen, {
+      requester,
+      addedAt: Date.now(),
+      originalQuery,
+      requestStartedAt: Date.now(),
+      failoverFromYoutube: true
+    });
   }
 
   async getAutoplayCandidate({ excludeCanonicalKeys = [], requester, originalQuery = 'Cache Autoplay' } = {}) {
@@ -309,9 +357,7 @@ export class AudioCacheService {
 
     let entry = this.index.get(needle) || null;
     if (!entry) {
-      entry = [...this.index.values()]
-        .filter((item) => item.canonicalKey.includes(needle) || canonicalizeTitle(item.track?.title || '').includes(needle))
-        .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0] || null;
+      entry = this.searchEntries(query, { limit: 1, maxScore: 0.5 })[0]?.entry || null;
     }
 
     if (!entry) {
@@ -321,6 +367,7 @@ export class AudioCacheService {
     this.index.delete(entry.canonicalKey);
     await rm(entry.filePath, { force: true }).catch(() => null);
     await this.persistIndex();
+    this.rebuildSearchIndex();
     return { ...entry };
   }
 
@@ -458,6 +505,7 @@ export class AudioCacheService {
       this.index.set(canonicalKey, entry);
       await this.enforceLimits();
       await this.persistIndex();
+      this.rebuildSearchIndex();
       return entry;
     } catch (error) {
       ffmpegProcess.kill('SIGKILL');
@@ -481,5 +529,7 @@ export class AudioCacheService {
       totalBytes -= victim.sizeBytes;
       await rm(victim.filePath, { force: true }).catch(() => null);
     }
+
+    this.rebuildSearchIndex();
   }
 }

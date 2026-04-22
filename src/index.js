@@ -1,11 +1,18 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   EmbedBuilder,
   GatewayIntentBits,
+  ModalBuilder,
   MessageFlags,
   REST,
-  Routes
+  Routes,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
+import { randomUUID } from 'node:crypto';
 import { config, validateConfig } from './config.js';
 import { commands } from './discord/commands.js';
 import { AudioCacheService } from './services/audioCache.js';
@@ -25,9 +32,12 @@ const audioCache = new AudioCacheService();
 const lyrics = new LyricsService();
 const players = new PlayerManager({ client, ytdlp, lyrics, audioCache });
 const AUTO_DELETE_MS = 5000;
+const CACHE_LIST_PAGE_SIZE = 10;
+const CACHE_LIST_SESSION_TTL_MS = 15 * 60 * 1000;
 const LOGIN_RETRY_BASE_DELAY_MS = 5_000;
 const LOGIN_RETRY_MAX_DELAY_MS = 60_000;
 let networkOutageDetected = false;
+const cacheListSessions = new Map();
 
 function helpEmbed() {
   return new EmbedBuilder()
@@ -173,6 +183,102 @@ function scheduleInteractionDelete(interaction, delayMs = AUTO_DELETE_MS) {
   setTimeout(() => {
     interaction.deleteReply().catch(() => null);
   }, delayMs);
+}
+
+function cleanupExpiredCacheListSessions() {
+  const now = Date.now();
+  for (const [sessionId, session] of cacheListSessions.entries()) {
+    if (now - session.updatedAt > CACHE_LIST_SESSION_TTL_MS) {
+      cacheListSessions.delete(sessionId);
+    }
+  }
+}
+
+function createCacheListSession(userId, query = '') {
+  cleanupExpiredCacheListSessions();
+  const sessionId = randomUUID();
+  cacheListSessions.set(sessionId, {
+    userId,
+    query,
+    page: 0,
+    updatedAt: Date.now()
+  });
+  return sessionId;
+}
+
+function getCacheListSession(sessionId) {
+  cleanupExpiredCacheListSessions();
+  const session = cacheListSessions.get(sessionId);
+  if (!session) {
+    return null;
+  }
+
+  session.updatedAt = Date.now();
+  return session;
+}
+
+async function buildCacheListView(player, { query = '', page = 0 } = {}) {
+  const safePage = Math.max(0, page);
+  const offset = safePage * CACHE_LIST_PAGE_SIZE;
+  const result = await player.audioCache.listEntries({
+    query,
+    limit: CACHE_LIST_PAGE_SIZE,
+    offset
+  });
+
+  const totalPages = Math.max(1, Math.ceil(result.total / CACHE_LIST_PAGE_SIZE));
+  const currentPage = Math.min(safePage, totalPages - 1);
+  const currentOffset = currentPage * CACHE_LIST_PAGE_SIZE;
+  const currentResult = currentPage === safePage
+    ? result
+    : await player.audioCache.listEntries({
+      query,
+      limit: CACHE_LIST_PAGE_SIZE,
+      offset: currentOffset
+    });
+
+  const startNumber = currentOffset + 1;
+  const lines = currentResult.entries.map((entry, index) =>
+    `${startNumber + index}. ${truncate(entry.track?.title || entry.canonicalKey, 80)} | ${formatDuration(entry.track?.duration || 0)} | ${formatBytes(entry.sizeBytes)}`
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(0x1abc9c)
+    .setTitle(query ? `Cache List: ${truncate(query, 80)}` : 'Cache List')
+    .setDescription(
+      lines.length > 0
+        ? `${lines.join('\n')}\n\nMenampilkan ${currentResult.entries.length} lagu. Total hasil: ${currentResult.total}.`
+        : 'Cache kosong atau tidak ada hasil untuk filter tersebut.'
+    )
+    .setFooter({ text: `Halaman ${currentPage + 1}/${totalPages} • Query: ${query || 'semua lagu'}` });
+
+  return {
+    embed,
+    page: currentPage,
+    total: currentResult.total,
+    totalPages
+  };
+}
+
+function buildCacheListComponents(sessionId, { page = 0, totalPages = 1 } = {}) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`cache:list:${sessionId}:prev`)
+        .setLabel('Prev')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 0),
+      new ButtonBuilder()
+        .setCustomId(`cache:list:${sessionId}:next`)
+        .setLabel('Next')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages - 1),
+      new ButtonBuilder()
+        .setCustomId(`cache:list:${sessionId}:search`)
+        .setLabel('Search')
+        .setStyle(ButtonStyle.Primary)
+    )
+  ];
 }
 
 client.once('clientReady', async () => {
@@ -335,22 +441,12 @@ client.on('interactionCreate', async (interaction) => {
         }
         case 'cache-list': {
           const query = interaction.options.getString('query') || '';
-          const result = await player.audioCache.listEntries({ query, limit: 20 });
-          const lines = result.entries.map((entry, index) =>
-            `${index + 1}. ${truncate(entry.track?.title || entry.canonicalKey, 80)} | ${formatDuration(entry.track?.duration || 0)} | ${formatBytes(entry.sizeBytes)}`
-          );
+          const sessionId = createCacheListSession(interaction.user.id, query);
+          const view = await buildCacheListView(player, { query, page: 0 });
 
           await interaction.reply({
-            embeds: [
-              new EmbedBuilder()
-                .setColor(0x1abc9c)
-                .setTitle(query ? `Cache List: ${truncate(query, 80)}` : 'Cache List')
-                .setDescription(
-                  lines.length > 0
-                    ? `${lines.join('\n')}\n\nMenampilkan ${result.entries.length} dari ${result.total} lagu cache.`
-                    : 'Cache kosong atau tidak ada hasil untuk filter tersebut.'
-                )
-            ],
+            embeds: [view.embed],
+            components: buildCacheListComponents(sessionId, view),
             flags: MessageFlags.Ephemeral
           });
           break;
@@ -396,6 +492,58 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     const player = playerFor(interaction);
     try {
+      if (interaction.customId.startsWith('cache:list:')) {
+        const [, , sessionId, action] = interaction.customId.split(':');
+        const session = getCacheListSession(sessionId);
+        if (!session) {
+          await interaction.reply({
+            content: 'Sesi cache list sudah kedaluwarsa. Jalankan `/cache-list` lagi.',
+            flags: MessageFlags.Ephemeral
+          });
+          return;
+        }
+
+        if (session.userId !== interaction.user.id) {
+          await interaction.reply({
+            content: 'Tombol ini hanya bisa dipakai oleh pembuat sesi cache list.',
+            flags: MessageFlags.Ephemeral
+          });
+          return;
+        }
+
+        if (action === 'search') {
+          const modal = new ModalBuilder()
+            .setCustomId(`cache:list:search:${sessionId}`)
+            .setTitle('Search Cache');
+          const input = new TextInputBuilder()
+            .setCustomId('query')
+            .setLabel('Judul / keyword')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false)
+            .setMaxLength(100)
+            .setValue(session.query || '')
+            .setPlaceholder('Kosongkan untuk tampilkan semua lagu');
+
+          modal.addComponents(new ActionRowBuilder().addComponents(input));
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (action === 'prev') {
+          session.page = Math.max(0, session.page - 1);
+        } else if (action === 'next') {
+          session.page += 1;
+        }
+
+        const view = await buildCacheListView(player, { query: session.query, page: session.page });
+        session.page = view.page;
+        await interaction.update({
+          embeds: [view.embed],
+          components: buildCacheListComponents(sessionId, view)
+        });
+        return;
+      }
+
       switch (interaction.customId) {
         case 'player:toggle': {
           const paused = player.togglePause();
@@ -446,6 +594,46 @@ client.on('interactionCreate', async (interaction) => {
           player.addLyricMessage(msg);
           break;
         }
+      }
+    } catch (error) {
+      const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg }).catch(() => null);
+      } else {
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => null);
+      }
+    }
+  }
+
+  if (interaction.isModalSubmit()) {
+    const player = playerFor(interaction);
+    try {
+      if (interaction.customId.startsWith('cache:list:search:')) {
+        const sessionId = interaction.customId.split(':')[3];
+        const session = getCacheListSession(sessionId);
+        if (!session) {
+          await interaction.reply({
+            content: 'Sesi cache list sudah kedaluwarsa. Jalankan `/cache-list` lagi.',
+            flags: MessageFlags.Ephemeral
+          });
+          return;
+        }
+
+        if (session.userId !== interaction.user.id) {
+          await interaction.reply({
+            content: 'Form ini hanya bisa dipakai oleh pembuat sesi cache list.',
+            flags: MessageFlags.Ephemeral
+          });
+          return;
+        }
+
+        session.query = interaction.fields.getTextInputValue('query').trim();
+        session.page = 0;
+        const view = await buildCacheListView(player, { query: session.query, page: 0 });
+        await interaction.update({
+          embeds: [view.embed],
+          components: buildCacheListComponents(sessionId, view)
+        });
       }
     } catch (error) {
       const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
