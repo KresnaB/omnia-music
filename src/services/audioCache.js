@@ -55,14 +55,16 @@ function createSearchDocument(entry) {
   const title = String(entry.track?.title || '');
   const uploader = String(entry.track?.uploader || '');
   const canonicalTitle = canonicalizeTitle(title);
+  const canonicalUploader = canonicalizeTitle(uploader);
 
   return {
     canonicalKey: entry.canonicalKey,
     title,
     uploader,
     canonicalTitle,
+    canonicalUploader,
     combined: `${title} ${uploader} ${entry.canonicalKey}`.trim(),
-    normalizedCombined: `${canonicalTitle} ${canonicalizeTitle(uploader)} ${entry.canonicalKey}`.trim(),
+    normalizedCombined: `${canonicalTitle} ${canonicalUploader} ${entry.canonicalKey}`.trim(),
     entry
   };
 }
@@ -146,27 +148,64 @@ export class AudioCacheService {
       includeScore: true,
       shouldSort: true,
       ignoreLocation: true,
-      threshold: 0.42,
-      minMatchCharLength: 2,
+      threshold: 0.3,
+      minMatchCharLength: 3,
       keys: [
-        { name: 'title', weight: 0.45 },
-        { name: 'uploader', weight: 0.1 },
-        { name: 'canonicalKey', weight: 0.2 },
-        { name: 'canonicalTitle', weight: 0.15 },
-        { name: 'combined', weight: 0.05 },
-        { name: 'normalizedCombined', weight: 0.05 }
+        { name: 'title', weight: 0.5 },
+        { name: 'canonicalTitle', weight: 0.25 },
+        { name: 'uploader', weight: 0.15 },
+        { name: 'canonicalUploader', weight: 0.05 },
+        { name: 'canonicalKey', weight: 0.05 }
       ]
     });
   }
 
-  searchEntries(query, { excludeCanonicalKeys = [], limit = 20, maxScore = 0.42 } = {}) {
+  searchEntries(query, { excludeCanonicalKeys = [], limit = 20, maxScore = 0.35 } = {}) {
     const needle = String(query || '').trim();
     if (!needle || !this.fuse) {
       return [];
     }
 
+    const canonicalNeedle = canonicalizeTitle(needle);
+    if (!canonicalNeedle || canonicalNeedle === 'unknown-track') {
+      return [];
+    }
+
     const excluded = new Set(excludeCanonicalKeys.filter(Boolean));
-    return this.fuse.search(needle, { limit: Math.max(limit * 3, limit) })
+    const directResults = this.searchDocs
+      .filter((doc) => !excluded.has(doc.canonicalKey))
+      .map((doc) => {
+        let rank = -1;
+        if (doc.canonicalTitle === canonicalNeedle || doc.canonicalKey === canonicalNeedle) {
+          rank = 0;
+        } else if (doc.canonicalTitle.split(/\s+/).includes(canonicalNeedle)) {
+          rank = 1;
+        } else if (doc.canonicalTitle.startsWith(canonicalNeedle) || doc.title.toLowerCase().startsWith(needle.toLowerCase())) {
+          rank = 2;
+        } else if (doc.canonicalTitle.includes(canonicalNeedle) || doc.canonicalKey.includes(canonicalNeedle)) {
+          rank = 3;
+        } else if (doc.canonicalUploader.includes(canonicalNeedle)) {
+          rank = 4;
+        }
+
+        return rank === -1 ? null : {
+          entry: doc.entry,
+          score: rank * 0.01,
+          directRank: rank
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) =>
+        a.directRank - b.directRank ||
+        b.entry.lastAccessedAt - a.entry.lastAccessedAt
+      )
+      .slice(0, limit);
+
+    if (directResults.length > 0) {
+      return directResults.map(({ entry, score }) => ({ entry, score }));
+    }
+
+    return this.fuse.search(needle, { limit: Math.max(limit * 5, limit) })
       .filter((result) => !excluded.has(result.item.canonicalKey))
       .filter((result) => result.score === undefined || result.score <= maxScore)
       .slice(0, limit)
@@ -264,7 +303,7 @@ export class AudioCacheService {
   async listEntries({ query = '', limit = 20, offset = 0 } = {}) {
     await this.init();
     const entries = query
-      ? this.searchEntries(query, { limit: this.index.size || limit, maxScore: 0.5 }).map((result) => result.entry)
+      ? this.searchEntries(query, { limit: this.index.size || limit, maxScore: 0.4 }).map((result) => result.entry)
       : [...this.index.values()].sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
 
     return {
@@ -287,7 +326,7 @@ export class AudioCacheService {
       return cloneTrackFromEntry(exact, overrides);
     }
 
-    const partial = this.searchEntries(query, { limit: 1, maxScore: 0.42 })[0]?.entry;
+    const partial = this.searchEntries(query, { limit: 1, maxScore: 0.35 })[0]?.entry;
 
     if (!partial) {
       return null;
@@ -300,7 +339,7 @@ export class AudioCacheService {
 
   async getBestMatchTrack({ query = '', excludeCanonicalKeys = [], minScore = 25, requester, originalQuery = 'Cache Fallback' } = {}) {
     await this.init();
-    const maxScore = Math.max(0.05, Math.min(0.75, 1 - (minScore / 100)));
+    const maxScore = Math.max(0.05, Math.min(0.4, 1 - (minScore / 100)));
     const chosen = this.searchEntries(query, {
       excludeCanonicalKeys,
       limit: 1,
@@ -357,7 +396,7 @@ export class AudioCacheService {
 
     let entry = this.index.get(needle) || null;
     if (!entry) {
-      entry = this.searchEntries(query, { limit: 1, maxScore: 0.5 })[0]?.entry || null;
+      entry = this.searchEntries(query, { limit: 1, maxScore: 0.4 })[0]?.entry || null;
     }
 
     if (!entry) {
