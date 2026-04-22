@@ -33,6 +33,14 @@ function cloneTrack(track) {
   });
 }
 
+function getTrackIdentity(track) {
+  if (!track) {
+    return null;
+  }
+
+  return track.id || track.canonicalKey || track.webpageUrl || track.url || track.title || null;
+}
+
 const VOICE_RECONNECT_BASE_DELAY_MS = 5_000;
 const VOICE_RECONNECT_MAX_DELAY_MS = 60_000;
 const VOICE_RECONNECT_MAX_ATTEMPTS = 12;
@@ -776,6 +784,7 @@ export class GuildPlayer {
 
   async prepareAutoplayTrack() {
     const seed = this.current || this.history[this.history.length - 1];
+    const seedKey = getTrackIdentity(seed);
     if (!this.autoplay || !seed) {
       return;
     }
@@ -790,12 +799,12 @@ export class GuildPlayer {
       return;
     }
 
-    if (this.autoplayPreparePromise && this.autoplaySeedId === seed.id) {
+    if (this.autoplayPreparePromise && this.autoplaySeedId === seedKey) {
       await this.autoplayPreparePromise;
       return;
     }
 
-    this.autoplaySeedId = seed.id || seed.canonicalKey;
+    this.autoplaySeedId = seedKey;
     this.autoplayPreparePromise = (async () => {
       try {
         if (this.youtubeStatus === 'down') {
@@ -804,7 +813,7 @@ export class GuildPlayer {
             originalQuery: 'Cache Autoplay'
           });
 
-          if (cached && this.autoplaySeedId === (seed.id || seed.canonicalKey)) {
+          if (cached && this.autoplaySeedId === seedKey) {
             this.queue.push(cached);
             this.shuffleActive = false;
             void this.publishNowPlaying('queue-update');
@@ -839,7 +848,7 @@ export class GuildPlayer {
         await this.ytdlp.hydrate(prepared);
 
         // Abaikan push jika referensi seed sudah di-reset oleh enqueue manual user
-        if (this.autoplaySeedId !== (seed.id || seed.canonicalKey)) {
+        if (this.autoplaySeedId !== seedKey) {
           return;
         }
 
@@ -861,7 +870,7 @@ export class GuildPlayer {
       } catch (error) {
         console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
       } finally {
-        if (this.autoplaySeedId === seed.id || this.autoplaySeedId === null) {
+        if (this.autoplaySeedId === seedKey || this.autoplaySeedId === null) {
           this.autoplayPreparePromise = null;
         }
       }
