@@ -72,6 +72,7 @@ export class GuildPlayer {
     this.lyricMessages = [];
     this.consecutiveErrors = 0;
     this.skipRequested = false;
+    this.skipTransitionActive = false;
     this.stopRequested = false;
     this.autoplayPreparePromise = null;
     this.autoplaySeedId = null;
@@ -97,6 +98,7 @@ export class GuildPlayer {
     });
 
     this.player.on(AudioPlayerStatus.Playing, async () => {
+      this.skipTransitionActive = false;
       if (this.currentMetrics?.logged || !this.current) {
         return;
       }
@@ -149,6 +151,7 @@ export class GuildPlayer {
       }
       this.current = null;
       if (wasStopped) {
+        this.skipTransitionActive = false;
         this.resetIdleTimer();
         return;
       }
@@ -176,6 +179,7 @@ export class GuildPlayer {
         await this.sendStatusMessage(errorMessage);
         void this.queuePlayNext(isNetwork ? 'network-retry' : 'error');
       } else {
+        this.skipTransitionActive = false;
         await this.sendStatusMessage(`Terlalu banyak error berturut-turut. Playback dihentikan.`);
         await this.stop();
       }
@@ -1014,6 +1018,7 @@ export class GuildPlayer {
     this.current = next || null;
 
     if (!next) {
+      this.skipTransitionActive = false;
       await this.publishIdleMessage();
       this.resetIdleTimer();
       return;
@@ -1483,8 +1488,13 @@ export class GuildPlayer {
       throw new Error('Tidak ada lagu yang sedang diputar');
     }
 
+    if (this.skipTransitionActive) {
+      return false;
+    }
+
     this.consecutiveErrors = 0; // Reset counter jika skip manual
     this.skipRequested = true;
+    this.skipTransitionActive = true;
     this.playNonce += 1;
 
     if (this.player.state.status === AudioPlayerStatus.Idle) {
@@ -1502,6 +1512,8 @@ export class GuildPlayer {
     } else {
       this.player.stop(true);
     }
+
+    return true;
   }
 
   async stop({ disconnect = false } = {}) {
@@ -1513,6 +1525,7 @@ export class GuildPlayer {
     this.consecutiveErrors = 0;
     this.playNonce += 1;
     this.stopRequested = true;
+    this.skipTransitionActive = false;
     clearTimeout(this.voiceReconnectTimer);
     this.voiceReconnectTimer = null;
     this.voiceReconnectAttempts = 0;

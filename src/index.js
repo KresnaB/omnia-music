@@ -364,8 +364,10 @@ client.on('interactionCreate', async (interaction) => {
           break;
         }
         case 'skip':
-          await player.skip();
-          await interaction.reply({ content: 'Lagu dilewati.', flags: MessageFlags.Ephemeral });
+          await interaction.reply({
+            content: (await player.skip()) ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.',
+            flags: MessageFlags.Ephemeral
+          });
           scheduleInteractionDelete(interaction);
           break;
         case 'stop':
@@ -552,8 +554,10 @@ client.on('interactionCreate', async (interaction) => {
           break;
         }
         case 'player:skip':
-          await player.skip();
-          await interaction.reply({ content: 'Lagu dilewati.', flags: MessageFlags.Ephemeral });
+          await interaction.reply({
+            content: (await player.skip()) ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.',
+            flags: MessageFlags.Ephemeral
+          });
           scheduleInteractionDelete(interaction);
           break;
         case 'player:stop':
