@@ -1215,18 +1215,27 @@ export class GuildPlayer {
 
   buildFfmpegArgsForInput(track, profile = 'opus', inputMode = 'url') {
     const headers = inputMode === 'url' ? this.buildHttpHeaders(track) : '';
-    const args = [
-      '-nostdin',
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-fflags',
-      '+discardcorrupt+genpts',
-      '-probesize',
-      '32M',
-      '-analyzeduration',
-      '15M'
-    ];
+    const args = ['-nostdin', '-hide_banner', '-loglevel', 'error'];
+
+    if (inputMode === 'local') {
+      args.push(
+        '-fflags',
+        '+genpts',
+        '-probesize',
+        '4M',
+        '-analyzeduration',
+        '2M'
+      );
+    } else {
+      args.push(
+        '-fflags',
+        '+discardcorrupt+genpts',
+        '-probesize',
+        '32M',
+        '-analyzeduration',
+        '15M'
+      );
+    }
 
     if (inputMode === 'url' || inputMode === 'local') {
       args.push(
