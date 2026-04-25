@@ -41,10 +41,31 @@ function getTrackIdentity(track) {
   return track.id || track.canonicalKey || track.webpageUrl || track.url || track.title || null;
 }
 
+function withTimeout(promise, timeoutMs, label) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`${label} timeout setelah ${Math.ceil(timeoutMs / 1000)} detik`));
+    }, timeoutMs);
+
+    Promise.resolve(promise)
+      .then((value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+  });
+}
+
 const VOICE_RECONNECT_BASE_DELAY_MS = 5_000;
 const VOICE_RECONNECT_MAX_DELAY_MS = 60_000;
 const VOICE_RECONNECT_MAX_ATTEMPTS = 12;
 const YOUTUBE_PROBE_COOLDOWN_MS = 2 * 60 * 1000;
+const TRACK_PREPARE_TIMEOUT_MS = 45_000;
+const PIPELINE_CREATE_TIMEOUT_MS = 20_000;
+const PIPELINE_IDLE_WATCHDOG_MS = 4_000;
 
 export class GuildPlayer {
   constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
@@ -90,6 +111,7 @@ export class GuildPlayer {
     this.youtubeProbePromise = null;
     this.youtubeLastCheckedAt = 0;
     this.nowPlayingUpdatePromise = Promise.resolve();
+    this.pipelineCompletionTimer = null;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -121,6 +143,7 @@ export class GuildPlayer {
     });
 
     this.player.on(AudioPlayerStatus.Idle, async () => {
+      this.clearPipelineCompletionTimer();
       if (this.currentProcess) {
         this.currentProcess.kill('SIGKILL');
         this.currentProcess = null;
@@ -280,6 +303,51 @@ export class GuildPlayer {
     }
 
     return 'Belum diperiksa';
+  }
+
+  clearPipelineCompletionTimer() {
+    clearTimeout(this.pipelineCompletionTimer);
+    this.pipelineCompletionTimer = null;
+  }
+
+  schedulePipelineCompletionAdvance(track, nonce, reason = 'pipeline-close') {
+    const trackKey = getTrackIdentity(track);
+    if (!trackKey || this.stopRequested) {
+      return;
+    }
+
+    this.clearPipelineCompletionTimer();
+    this.pipelineCompletionTimer = setTimeout(() => {
+      this.pipelineCompletionTimer = null;
+
+      if (this.stopRequested || this.skipRequested || this.playNonce !== nonce) {
+        return;
+      }
+
+      const currentKey = getTrackIdentity(this.current);
+      if (!currentKey || currentKey !== trackKey) {
+        return;
+      }
+
+      if (this.player.state.status === AudioPlayerStatus.Idle) {
+        return;
+      }
+
+      console.warn(
+        `[player:${this.guildId}] forcing idle transition after ${reason} for "${truncate(track.title, 80)}"`
+      );
+      this.player.stop(true);
+    }, PIPELINE_IDLE_WATCHDOG_MS);
+  }
+
+  maybeResumePlayback(reason = 'queue-update') {
+    if (this.stopRequested || this.current || this.queue.length === 0 || this.playNextPromise) {
+      return;
+    }
+
+    if (this.player.state.status === AudioPlayerStatus.Idle) {
+      void this.queuePlayNext(reason);
+    }
   }
 
   async buildCacheFallbackTrack({ requester, originalQuery = 'Cache Fallback', preferredQuery = '' } = {}) {
@@ -929,6 +997,7 @@ export class GuildPlayer {
             this.queue.push(cached);
             this.shuffleActive = false;
             void this.publishNowPlaying('queue-update');
+            this.maybeResumePlayback('autoplay-cache-ready');
           }
           return;
         }
@@ -978,6 +1047,7 @@ export class GuildPlayer {
           this.queue.push(prepared);
           this.shuffleActive = false;
           void this.publishNowPlaying('queue-update');
+          this.maybeResumePlayback('autoplay-ready');
         }
       } catch (error) {
         console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
@@ -1004,6 +1074,7 @@ export class GuildPlayer {
 
   async playNext(reason = 'manual') {
     clearTimeout(this.idleTimeout);
+    this.clearPipelineCompletionTimer();
 
     if (this.sleepUntil && Date.now() >= this.sleepUntil) {
       await this.stop({ disconnect: true });
@@ -1036,11 +1107,19 @@ export class GuildPlayer {
 
     try {
       const hydrateStartedAt = Date.now();
-      await this.prepareTrackForPlayback(next, { trigger: reason, allowBackgroundDownload: true });
+      await withTimeout(
+        this.prepareTrackForPlayback(next, { trigger: reason, allowBackgroundDownload: true }),
+        TRACK_PREPARE_TIMEOUT_MS,
+        'persiapan track'
+      );
       metrics.hydrateMs = Date.now() - hydrateStartedAt;
 
       const pipelineStartedAt = Date.now();
-      const prepared = await this.createAudioPipeline(next);
+      const prepared = await withTimeout(
+        this.createAudioPipeline(next),
+        PIPELINE_CREATE_TIMEOUT_MS,
+        'pembuatan audio pipeline'
+      );
       metrics.pipelineMs = Date.now() - pipelineStartedAt;
 
       if (nonce !== this.playNonce) {
@@ -1060,6 +1139,9 @@ export class GuildPlayer {
       this.currentProcess = prepared.process;
       this.currentSourceProcess = prepared.sourceProcess || null;
       this.currentMetrics = metrics;
+      prepared.process.once('close', () => {
+        this.schedulePipelineCompletionAdvance(next, nonce, 'ffmpeg-close');
+      });
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
       void this.preloadUpcomingTracks();
@@ -1517,6 +1599,7 @@ export class GuildPlayer {
   }
 
   async stop({ disconnect = false } = {}) {
+    this.clearPipelineCompletionTimer();
     this.queue = [];
     this.current = null;
     this.currentMetrics = null;
