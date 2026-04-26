@@ -986,10 +986,10 @@ export class GuildPlayer {
     this.autoplaySeedId = seedKey;
     this.autoplayPreparePromise = (async () => {
       try {
-        if (this.youtubeStatus === 'down') {
+        const enqueueCacheAutoplay = async (originalQuery = 'Cache Autoplay') => {
           const cached = await this.buildCacheFallbackTrack({
             requester: { id: 'autoplay', name: 'Autoplay Cache' },
-            originalQuery: 'Cache Autoplay',
+            originalQuery,
             preferredQuery: `${seed.title || ''} ${seed.uploader || ''}`.trim()
           });
 
@@ -999,6 +999,11 @@ export class GuildPlayer {
             void this.publishNowPlaying('queue-update');
             this.maybeResumePlayback('autoplay-cache-ready');
           }
+          return Boolean(cached);
+        };
+
+        if (this.youtubeStatus === 'down') {
+          await enqueueCacheAutoplay('Cache Autoplay');
           return;
         }
 
@@ -1050,6 +1055,28 @@ export class GuildPlayer {
           this.maybeResumePlayback('autoplay-ready');
         }
       } catch (error) {
+        const canFailoverToCache =
+          isYoutubeAvailabilityError(error) ||
+          isTransientNetworkError(error) ||
+          this.youtubeStatus === 'down';
+
+        if (canFailoverToCache) {
+          this.setYoutubeUnavailable(error.message);
+          const enqueued = await this.buildCacheFallbackTrack({
+            requester: { id: 'autoplay', name: 'Autoplay Cache' },
+            originalQuery: `Cache failover autoplay: ${seed.title || 'Unknown'}`,
+            preferredQuery: `${seed.title || ''} ${seed.uploader || ''}`.trim()
+          });
+
+          if (enqueued && this.autoplaySeedId === seedKey) {
+            this.queue.push(enqueued);
+            this.shuffleActive = false;
+            void this.publishNowPlaying('queue-update');
+            this.maybeResumePlayback('autoplay-failover-ready');
+            return;
+          }
+        }
+
         console.warn(`[player:${this.guildId}] autoplay prepare failed:`, error.message);
       } finally {
         if (this.autoplaySeedId === seedKey || this.autoplaySeedId === null) {
