@@ -79,7 +79,10 @@ function cloneTrackMeta(track) {
     uploader: track.uploader || 'Unknown',
     thumbnail: track.thumbnail || null,
     source: track.source || 'youtube',
-    canonicalKey: track.canonicalKey || canonicalizeTitle(track.title)
+    canonicalKey: track.canonicalKey || canonicalizeTitle(track.title),
+    cacheFormat: 'ogg',
+    cacheCodec: 'opus',
+    cacheBitrateKbps: config.audioCacheBitrateKbps
   };
 }
 
@@ -261,9 +264,111 @@ export class AudioCacheService {
       }
     }
 
+    await this.migrateExistingCacheEntries();
     await this.persistIndex();
     await this.enforceLimits();
     this.rebuildSearchIndex();
+  }
+
+  async migrateExistingCacheEntries() {
+    const entries = [...this.index.values()];
+    let changed = false;
+
+    for (const entry of entries) {
+      const currentExt = path.extname(entry.fileName || entry.filePath || '').toLowerCase();
+      const trackFormat = String(entry.track?.cacheFormat || '').toLowerCase();
+      const trackCodec = String(entry.track?.cacheCodec || '').toLowerCase();
+      const needsMigration =
+        currentExt !== '.ogg' ||
+        trackFormat !== 'ogg' ||
+        trackCodec !== 'opus' ||
+        entry.track?.cacheBitrateKbps !== config.audioCacheBitrateKbps;
+
+      if (!needsMigration) {
+        continue;
+      }
+
+      try {
+        await this.transcodeEntryToOpus(entry);
+        changed = true;
+      } catch (error) {
+        console.warn(`[audio-cache] migrate failed for "${entry.track?.title || entry.canonicalKey}":`, error.message);
+      }
+    }
+
+    if (changed) {
+      this.rebuildSearchIndex();
+    }
+  }
+
+  async transcodeEntryToOpus(entry) {
+    const baseName = sanitizeFilePart(`${entry.canonicalKey}-${entry.track?.title || 'track'}`);
+    const finalName = `${baseName}.ogg`;
+    const finalPath = path.join(config.audioCacheDir, finalName);
+    const tempPath = path.join(config.audioCacheDir, `${baseName}.${Date.now()}.migrate.part.ogg`);
+    const currentPath = entry.filePath;
+
+    if (!currentPath) {
+      throw new Error('entry filePath tidak tersedia');
+    }
+
+    const ffmpegArgs = [
+      '-nostdin',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      currentPath,
+      '-vn',
+      '-sn',
+      '-dn',
+      '-map',
+      'a?',
+      '-c:a',
+      'libopus',
+      '-application',
+      'audio',
+      '-frame_duration',
+      '20',
+      '-compression_level',
+      '10',
+      '-b:a',
+      `${config.audioCacheBitrateKbps}k`,
+      '-vbr',
+      'on',
+      '-f',
+      'ogg',
+      '-y',
+      tempPath
+    ];
+
+    const ffmpegProcess = spawn(config.ffmpegPath, ffmpegArgs, {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+
+    try {
+      await waitForExit(ffmpegProcess, 'ffmpeg migrate');
+      await rm(finalPath, { force: true }).catch(() => null);
+      await rename(tempPath, finalPath);
+      if (path.resolve(finalPath) !== path.resolve(currentPath)) {
+        await rm(currentPath, { force: true }).catch(() => null);
+      }
+
+      const fileStat = await stat(finalPath);
+      entry.fileName = finalName;
+      entry.filePath = finalPath;
+      entry.sizeBytes = fileStat.size;
+      entry.track = {
+        ...(entry.track || {}),
+        cacheFormat: 'ogg',
+        cacheCodec: 'opus',
+        cacheBitrateKbps: config.audioCacheBitrateKbps
+      };
+    } catch (error) {
+      ffmpegProcess.kill('SIGKILL');
+      await rm(tempPath, { force: true }).catch(() => null);
+      throw error;
+    }
   }
 
   async persistIndex() {
@@ -479,8 +584,8 @@ export class AudioCacheService {
     }
 
     const baseName = sanitizeFilePart(`${canonicalKey}-${track.title || 'track'}`);
-    const finalName = `${baseName}.mp3`;
-    const tempName = `${baseName}.${Date.now()}.part.mp3`;
+    const finalName = `${baseName}.ogg`;
+    const tempName = `${baseName}.${Date.now()}.part.ogg`;
     const finalPath = path.join(config.audioCacheDir, finalName);
     const tempPath = path.join(config.audioCacheDir, tempName);
     const headers = buildHttpHeaders(track);
@@ -509,11 +614,19 @@ export class AudioCacheService {
       '-map',
       'a?',
       '-c:a',
-      'libmp3lame',
+      'libopus',
+      '-application',
+      'audio',
+      '-frame_duration',
+      '20',
+      '-compression_level',
+      '10',
       '-b:a',
       `${config.audioCacheBitrateKbps}k`,
+      '-vbr',
+      'on',
       '-f',
-      'mp3',
+      'ogg',
       '-y',
       tempPath
     ];
