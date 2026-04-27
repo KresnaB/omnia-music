@@ -25,6 +25,21 @@ function isYoutubeAvailabilityError(error) {
   return /youtube|yt-dlp|cookie|cookies|403|401|forbidden|sign in|login|premiere|player response|mweb|pot|extractor|stream failed|hydrate failed|metadata failed/.test(message);
 }
 
+function needsAutoplaySeedHydration(track) {
+  if (!track) {
+    return false;
+  }
+
+  return Boolean(
+    track.metadataPending ||
+    !track.id ||
+    !track.uploader ||
+    track.uploader === 'Loading...' ||
+    isUrl(track.title) ||
+    isUrl(track.url) && String(track.id || '').length !== 11
+  );
+}
+
 function cloneTrack(track) {
   return structuredClone({
     ...track,
@@ -1005,6 +1020,10 @@ export class GuildPlayer {
         if (this.youtubeStatus === 'down') {
           await enqueueCacheAutoplay('Cache Autoplay');
           return;
+        }
+
+        if (needsAutoplaySeedHydration(seed)) {
+          await this.ytdlp.hydrateMetadata(seed);
         }
 
         let query;

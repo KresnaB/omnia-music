@@ -90,6 +90,16 @@ function extractVideoIdFromUrl(input) {
     if (url.searchParams.get('v')) {
       return url.searchParams.get('v');
     }
+    if (url.hostname === 'youtu.be') {
+      const shortId = url.pathname.replace(/^\/+/, '').split('/')[0];
+      if (/^[a-zA-Z0-9_-]{11}$/.test(shortId)) {
+        return shortId;
+      }
+    }
+    const embedMatch = url.pathname.match(/\/(?:embed|live)\/([a-zA-Z0-9_-]{11})/);
+    if (embedMatch) {
+      return embedMatch[1];
+    }
     const shortsMatch = url.pathname.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
     if (shortsMatch) {
       return shortsMatch[1];
