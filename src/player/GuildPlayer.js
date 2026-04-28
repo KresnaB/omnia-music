@@ -427,6 +427,7 @@ export class GuildPlayer {
         return {
           type: 'single',
           fromCache: true,
+          isFirstPlay,
           tracks: [localTrack]
         };
       }
@@ -522,13 +523,18 @@ export class GuildPlayer {
     this.insertUserTracks(tracks);
     void this.publishNowPlaying('queue-update');
 
+    const isFirstPlay = !this.current;
     if (!this.current) {
       void this.queuePlayNext('enqueue');
     } else {
       void this.preloadUpcomingTracks();
     }
 
-    return { ...resolved, tracks };
+    if (isFirstPlay) {
+      void this.scheduleYoutubeAvailabilityProbe({ waitForPlaybackStart: true });
+    }
+
+    return { ...resolved, tracks, isFirstPlay };
   }
 
   insertUserTracks(tracks) {
@@ -995,7 +1001,13 @@ export class GuildPlayer {
 
     if (this.autoplayPreparePromise && this.autoplaySeedId === seedKey) {
       await this.autoplayPreparePromise;
-      return;
+      // Cek apakah promise tadi benar-benar menghasilkan track di queue
+      const gotTrack = this.queue.some((track) => track.requester?.id === 'autoplay');
+      if (gotTrack) {
+        return;
+      }
+      // Promise selesai tapi gagal push track — lanjut retry di bawah
+      console.log(`[player:${this.guildId}] autoplay promise selesai tanpa hasil, retry...`);
     }
 
     this.autoplaySeedId = seedKey;
@@ -1128,6 +1140,10 @@ export class GuildPlayer {
     }
 
     if (this.queue.length === 0 && this.autoplay) {
+      // Reset stale autoplay state agar retry bersih jika background call sebelumnya gagal
+      if (!this.autoplayPreparePromise) {
+        this.autoplaySeedId = null;
+      }
       await this.prepareAutoplayTrack();
     }
 
