@@ -191,6 +191,20 @@ export class GuildPlayer {
 
     this.player.on(AudioPlayerStatus.Idle, async () => {
       this.clearPipelineCompletionTimer();
+
+      // Jika crossfade skip sedang aktif, transisi ini berasal dari
+      // skip() yang sudah menangani queue management. Jangan proses ulang.
+      if (this.skipTransitionActive) {
+        this.skipRequested = false;
+        this.stopRequested = false;
+        this.playbackStartedAt = null;
+        clearTimeout(this.crossfadeBufferTimer);
+        this.crossfadeBufferTimer = null;
+        // Jangan kill process karena crossfade pipeline sudah dipasang
+        // Jangan ubah current/queue karena crossfade skip sudah mengaturnya
+        return;
+      }
+
       if (this.currentProcess) {
         this.currentProcess.kill("SIGKILL");
         this.currentProcess = null;
