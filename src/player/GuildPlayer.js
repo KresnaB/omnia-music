@@ -104,6 +104,8 @@ const YOUTUBE_PROBE_COOLDOWN_MS = 2 * 60 * 1000;
 const TRACK_PREPARE_TIMEOUT_MS = 45_000;
 const PIPELINE_CREATE_TIMEOUT_MS = 20_000;
 const PIPELINE_IDLE_WATCHDOG_MS = 4_000;
+const CROSSFADE_DURATION_SECONDS = 3;
+const CROSSFADE_FADE_IN_DURATION_SECONDS = 2;
 
 export class GuildPlayer {
   constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
@@ -150,6 +152,9 @@ export class GuildPlayer {
     this.youtubeLastCheckedAt = 0;
     this.nowPlayingUpdatePromise = Promise.resolve();
     this.pipelineCompletionTimer = null;
+    this.playbackStartedAt = null;
+    this.finishedTrack = null;
+    this.crossfadeBufferTimer = null;
 
     this.player = createAudioPlayer({
       behaviors: {
@@ -159,6 +164,7 @@ export class GuildPlayer {
 
     this.player.on(AudioPlayerStatus.Playing, async () => {
       this.skipTransitionActive = false;
+      this.playbackStartedAt = Date.now();
       if (this.currentMetrics?.logged || !this.current) {
         return;
       }
@@ -199,6 +205,9 @@ export class GuildPlayer {
       const wasStopped = this.stopRequested;
       this.skipRequested = false;
       this.stopRequested = false;
+      this.playbackStartedAt = null;
+      clearTimeout(this.crossfadeBufferTimer);
+      this.crossfadeBufferTimer = null;
       if (finished) {
         this.consecutiveErrors = 0;
         if (wasStopped) {
@@ -213,6 +222,7 @@ export class GuildPlayer {
           this.handleTrackCompletion(finished);
         }
       }
+      this.finishedTrack = finished;
       this.current = null;
       if (wasStopped) {
         this.skipTransitionActive = false;
@@ -357,6 +367,137 @@ export class GuildPlayer {
   clearPipelineCompletionTimer() {
     clearTimeout(this.pipelineCompletionTimer);
     this.pipelineCompletionTimer = null;
+  }
+
+  getElapsedSeconds() {
+    if (!this.playbackStartedAt || !this.current) {
+      return 0;
+    }
+    return (Date.now() - this.playbackStartedAt) / 1000 + (this.current.seekSeconds || 0);
+  }
+
+  buildCrossfadeFfmpegArgs(currentTrack, nextTrack, currentPosition) {
+    const args = ["-nostdin", "-hide_banner", "-loglevel", "error"];
+
+    // First input: current track from current position
+    args.push(
+      "-fflags", "+discardcorrupt+genpts",
+      "-probesize", "32M",
+      "-analyzeduration", "15M",
+    );
+
+    if (currentPosition > 0) {
+      args.push("-ss", String(currentPosition));
+    }
+
+    if (!currentTrack.localPath) {
+      const headers = this.buildHttpHeaders(currentTrack);
+      if (headers) {
+        args.push("-headers", headers);
+      }
+      args.push(
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_on_network_error", "1",
+        "-reconnect_on_http_error", "4xx,5xx",
+        "-reconnect_delay_max", "5",
+      );
+    }
+
+    args.push("-i", currentTrack.localPath || currentTrack.streamUrl);
+
+    // Second input: next track from start
+    args.push(
+      "-fflags", "+discardcorrupt+genpts",
+      "-probesize", "32M",
+      "-analyzeduration", "15M",
+    );
+
+    if (!nextTrack.localPath) {
+      const nextHeaders = this.buildHttpHeaders(nextTrack);
+      if (nextHeaders) {
+        args.push("-headers", nextHeaders);
+      }
+      args.push(
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_on_network_error", "1",
+        "-reconnect_on_http_error", "4xx,5xx",
+        "-reconnect_delay_max", "5",
+      );
+    }
+
+    args.push("-i", nextTrack.localPath || nextTrack.streamUrl);
+
+    // Crossfade filter: fades out first track and fades in second track
+    args.push(
+      "-filter_complex",
+      `[0:a][1:a]acrossfade=d=${CROSSFADE_DURATION_SECONDS}:c1=tri:c2=tri[out]`,
+      "-map", "[out]",
+      "-c:a", "libopus",
+      "-application", "audio",
+      "-frame_duration", "20",
+      "-compression_level", "10",
+      "-b:a", "128k",
+      "-ar", "48000",
+      "-ac", "2",
+      "-f", "ogg",
+      "pipe:1",
+    );
+
+    return args;
+  }
+
+  buildFadeInFfmpegArgs(track) {
+    const args = this.buildFfmpegArgsForInput(track, "opus", track.localPath ? "local" : "url");
+    // Replace or append fade-in filter
+    const fadeArgIndex = args.indexOf("-af");
+    const fadeFilter = `afade=t=in:ss=0:d=${CROSSFADE_FADE_IN_DURATION_SECONDS}`;
+    if (fadeArgIndex >= 0) {
+      args[fadeArgIndex + 1] += `,${fadeFilter}`;
+    } else {
+      args.push("-af", fadeFilter);
+    }
+    return args;
+  }
+
+  async createCrossfadePipeline(currentTrack, nextTrack, currentPosition) {
+    const ffmpegArgs = this.buildCrossfadeFfmpegArgs(currentTrack, nextTrack, currentPosition);
+    const process = spawn(config.ffmpegPath, ffmpegArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    let probeReady = false;
+    process.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    const startupFailure = new Promise((_, reject) => {
+      process.once("error", (error) => {
+        reject(new Error(`ffmpeg crossfade spawn failed: ${error.message}`));
+      });
+      process.once("close", (code) => {
+        if (probeReady) return;
+        reject(
+          new Error(
+            code && stderr.trim()
+              ? `ffmpeg crossfade exited with code ${code}: ${truncate(stderr.trim(), 500)}`
+              : "ffmpeg crossfade berhenti sebelum stream audio siap",
+          ),
+        );
+      });
+    });
+
+    const probe = Promise.race([demuxProbe(process.stdout), startupFailure]);
+
+    return {
+      process,
+      sourceProcess: null,
+      probe,
+      markProbeReady: () => { probeReady = true; },
+      stderr: () => stderr,
+    };
   }
 
   schedulePipelineCompletionAdvance(track, nonce, reason = "pipeline-close") {
@@ -1365,11 +1506,13 @@ export class GuildPlayer {
       metrics.hydrateMs = Date.now() - hydrateStartedAt;
 
       const pipelineStartedAt = Date.now();
+      const useFadeIn = Boolean(this.finishedTrack) && reason === "idle";
       const prepared = await withTimeout(
-        this.createAudioPipeline(next),
+        this.createAudioPipeline(next, useFadeIn),
         PIPELINE_CREATE_TIMEOUT_MS,
         "pembuatan audio pipeline",
       );
+      this.finishedTrack = null;
       metrics.pipelineMs = Date.now() - pipelineStartedAt;
 
       if (nonce !== this.playNonce) {
@@ -1606,8 +1749,20 @@ export class GuildPlayer {
     profile = "opus",
     inputMode = "url",
     sourceProcess = null,
+    fadeIn = false,
   ) {
     const args = this.buildFfmpegArgsForInput(track, profile, inputMode);
+
+    // Add fade-in for natural transitions (soft start)
+    if (fadeIn) {
+      const fadeFilter = `afade=t=in:ss=0:d=${CROSSFADE_FADE_IN_DURATION_SECONDS}`;
+      const afIdx = args.indexOf("-af");
+      if (afIdx >= 0) {
+        args[afIdx + 1] += `,${fadeFilter}`;
+      } else {
+        args.push("-af", fadeFilter);
+      }
+    }
     const process = spawn(config.ffmpegPath, args, {
       stdio: [inputMode === "stdin" ? "pipe" : "ignore", "pipe", "pipe"],
     });
@@ -1655,7 +1810,7 @@ export class GuildPlayer {
     };
   }
 
-  async createAudioPipeline(track) {
+  async createAudioPipeline(track, fadeIn = false) {
     if (!track.localPath && !track.streamUrl) {
       throw new Error(
         `Gagal mendapatkan direct stream audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`,
@@ -1663,7 +1818,7 @@ export class GuildPlayer {
     }
 
     const primaryInputMode = track.localPath ? "local" : "url";
-    let processState = this.spawnAudioProcess(track, "opus", primaryInputMode);
+    let processState = this.spawnAudioProcess(track, "opus", primaryInputMode, null, fadeIn);
     let probed;
 
     try {
@@ -1696,6 +1851,7 @@ export class GuildPlayer {
           "opus",
           "stdin",
           sourceProcess,
+          fadeIn,
         );
         try {
           probed = await processState.probe;
@@ -1728,6 +1884,7 @@ export class GuildPlayer {
             "pcm",
             "stdin",
             sourceProcessPcm,
+            fadeIn,
           );
           try {
             probed = await processState.probe;
@@ -1742,7 +1899,7 @@ export class GuildPlayer {
           throw error;
         }
 
-        processState = this.spawnAudioProcess(track, "pcm", primaryInputMode);
+        processState = this.spawnAudioProcess(track, "pcm", primaryInputMode, null, fadeIn);
         try {
           probed = await processState.probe;
         } catch (retryError) {
@@ -1948,7 +2105,137 @@ export class GuildPlayer {
       this.current = null;
       this.skipRequested = false;
       void this.queuePlayNext("skip");
-    } else {
+      return true;
+    }
+
+    // Crossfade skip: prepare combined pipeline with current + next track
+    const nonce = this.playNonce;
+    const currentTrack = this.current;
+    const nextTrack = this.queue[0];
+
+    if (!currentTrack || !nextTrack || (!currentTrack.streamUrl && !currentTrack.localPath)) {
+      // Fallback: skip without crossfade
+      this.player.stop(true);
+      return true;
+    }
+
+    const currentPosition = this.getElapsedSeconds();
+    const remainingSeconds = (currentTrack.duration || 0) - currentPosition;
+
+    // Only crossfade if there's enough remaining time (at least 1 second)
+    if (remainingSeconds < 1) {
+      this.player.stop(true);
+      return true;
+    }
+
+    try {
+      // Prepare next track for crossfade
+      const hydrateStartedAt = Date.now();
+      await withTimeout(
+        this.prepareTrackForPlayback(nextTrack, {
+          trigger: "skip-crossfade",
+          allowBackgroundDownload: false,
+        }),
+        TRACK_PREPARE_TIMEOUT_MS,
+        "persiapan track skip crossfade",
+      );
+
+      if (nonce !== this.playNonce) return true;
+
+      const args = this.buildCrossfadeFfmpegArgs(currentTrack, nextTrack, currentPosition);
+      const process = spawn(config.ffmpegPath, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stderr = "";
+      let probeReady = false;
+      process.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      const startupFailure = new Promise((_, reject) => {
+        process.once("error", (error) => {
+          reject(new Error(`ffmpeg crossfade spawn failed: ${error.message}`));
+        });
+        process.once("close", (code) => {
+          if (probeReady) return;
+          reject(
+            new Error(
+              code && stderr.trim()
+                ? `ffmpeg crossfade exited with code ${code}: ${truncate(stderr.trim(), 500)}`
+                : "ffmpeg crossfade berhenti sebelum stream audio siap",
+            ),
+          );
+        });
+      });
+
+      const probed = await Promise.race([
+        demuxProbe(process.stdout),
+        startupFailure,
+      ]);
+
+      if (nonce !== this.playNonce) {
+        process.kill("SIGKILL");
+        return true;
+      }
+
+      probeReady = true;
+
+      const resource = createAudioResource(probed.stream, {
+        inputType: probed.type,
+        metadata: nextTrack,
+      });
+
+      // Kill old processes
+      if (this.currentProcess) {
+        this.currentProcess.kill("SIGKILL");
+      }
+      if (this.currentSourceProcess) {
+        this.currentSourceProcess.kill("SIGKILL");
+      }
+
+      this.clearLyricMessages();
+      this.currentProcess = process;
+      this.currentSourceProcess = null;
+
+      process.once("close", () => {
+        this.schedulePipelineCompletionAdvance(nextTrack, nonce, "crossfade-close");
+      });
+
+      // Remove next track from queue (it's now being played in the crossfade)
+      this.queue.shift();
+
+      // Move current track to history
+      currentTrack.seekSeconds = 0;
+      this.history.push(currentTrack);
+      if (this.history.length > 25) {
+        this.history = this.history.slice(-25);
+      }
+
+      this.current = nextTrack;
+      this.currentMetrics = {
+        requestStartedAt: nextTrack.requestStartedAt || nextTrack.addedAt || Date.now(),
+        playNextStartedAt: Date.now(),
+        hydrateMs: Date.now() - hydrateStartedAt,
+        pipelineMs: 0,
+        logged: false,
+      };
+
+      this.player.play(resource);
+      void this.publishNowPlaying("skip-crossfade");
+      void this.preloadUpcomingTracks();
+      if (this.autoplay && this.queue.length === 0) {
+        void this.prepareAutoplayTrack();
+      }
+    } catch (error) {
+      console.warn(
+        `[player:${this.guildId}] crossfade skip failed, falling back: ${error.message}`,
+      );
+      // Fallback: regular skip
+      this.playNonce = nonce;
+      this.current = currentTrack;
+      this.queue.unshift(nextTrack);
+      this.skipTransitionActive = false;
       this.player.stop(true);
     }
 
@@ -1957,9 +2244,13 @@ export class GuildPlayer {
 
   async stop({ disconnect = false } = {}) {
     this.clearPipelineCompletionTimer();
+    clearTimeout(this.crossfadeBufferTimer);
+    this.crossfadeBufferTimer = null;
     this.queue = [];
     this.current = null;
+    this.finishedTrack = null;
     this.currentMetrics = null;
+    this.playbackStartedAt = null;
     this.autoplay = false;
     this.shuffleActive = false;
     this.consecutiveErrors = 0;
