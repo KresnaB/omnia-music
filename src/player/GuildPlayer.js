@@ -393,7 +393,8 @@ export class GuildPlayer {
   buildCrossfadeFfmpegArgs(currentTrack, nextTrack, currentPosition) {
     const args = ["-nostdin", "-hide_banner", "-loglevel", "error"];
 
-    // First input: current track from current position
+    // First input: current track from current position, hanya ambil CROSSFADE_DURATION detik
+    // sehingga acrossfade langsung mulai dari awal (crossfade segera, tidak menunggu lagu habis)
     args.push(
       "-fflags", "+discardcorrupt+genpts",
       "-probesize", "32M",
@@ -403,6 +404,9 @@ export class GuildPlayer {
     if (currentPosition > 0) {
       args.push("-ss", String(currentPosition));
     }
+
+    // Batasi durasi input pertama hanya sepanjang crossfade
+    args.push("-t", String(CROSSFADE_DURATION_SECONDS));
 
     if (!currentTrack.localPath) {
       const headers = this.buildHttpHeaders(currentTrack);
@@ -420,7 +424,7 @@ export class GuildPlayer {
 
     args.push("-i", currentTrack.localPath || currentTrack.streamUrl);
 
-    // Second input: next track from start
+    // Second input: next track dari awal
     args.push(
       "-fflags", "+discardcorrupt+genpts",
       "-probesize", "32M",
@@ -443,7 +447,9 @@ export class GuildPlayer {
 
     args.push("-i", nextTrack.localPath || nextTrack.streamUrl);
 
-    // Crossfade filter: fades out first track and fades in second track
+    // Crossfade filter: karena input pertama hanya CROSSFADE_DURATION detik,
+    // acrossfade langsung crossfade dari awal (d = CROSSFADE_DURATION)
+    // Hasil: 3 detik fading dari track_lama ke track_baru, lalu track_baru lanjut
     args.push(
       "-filter_complex",
       `[0:a][1:a]acrossfade=d=${CROSSFADE_DURATION_SECONDS}:c1=tri:c2=tri[out]`,
@@ -2129,15 +2135,19 @@ export class GuildPlayer {
 
     if (!currentTrack || !nextTrack || (!currentTrack.streamUrl && !currentTrack.localPath)) {
       // Fallback: skip without crossfade
+      this.skipTransitionActive = false;
       this.player.stop(true);
       return true;
     }
 
     const currentPosition = this.getElapsedSeconds();
-    const remainingSeconds = (currentTrack.duration || 0) - currentPosition;
+    const remainingSeconds = currentTrack.duration
+      ? (currentTrack.duration || 0) - currentPosition
+      : CROSSFADE_DURATION_SECONDS + 1; // durasi tidak diketahui, asumsikan cukup
 
-    // Only crossfade if there's enough remaining time (at least 1 second)
+    // Crossfade hanya jika remaining time cukup
     if (remainingSeconds < 1) {
+      this.skipTransitionActive = false;
       this.player.stop(true);
       return true;
     }
