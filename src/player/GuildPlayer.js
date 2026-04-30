@@ -243,6 +243,9 @@ export class GuildPlayer {
         this.resetIdleTimer();
         return;
       }
+      // Defensive: pastikan tidak ada watchdog tersisa dari proses sebelumnya
+      // yang bisa dipicu oleh kill() di atas sebelum queuePlayNext.
+      this.clearPipelineCompletionTimer();
       await this.queuePlayNext("idle");
     });
 
@@ -1514,6 +1517,22 @@ export class GuildPlayer {
     };
 
     try {
+      // Jika track ini sedang di-preload oleh preloadUpcomingTracks(),
+      // tunggu preload selesai dulu (maks 30 detik) supaya tidak terjadi
+      // dua panggilan yt-dlp bersamaan untuk track yang sama.
+      if (next.id && this.preloadInFlight.has(next.id)) {
+        const waitStart = Date.now();
+        while (this.preloadInFlight.has(next.id)) {
+          if (Date.now() - waitStart > 30_000) {
+            console.warn(
+              `[player:${this.guildId}] preload for "${truncate(next.title, 80)}" taking too long, proceeding anyway`,
+            );
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+      }
+
       const hydrateStartedAt = Date.now();
       await withTimeout(
         this.prepareTrackForPlayback(next, {
@@ -1527,12 +1546,14 @@ export class GuildPlayer {
 
       const pipelineStartedAt = Date.now();
       const useFadeIn = Boolean(this.finishedTrack) && reason === "idle";
+      // Lepas referensi finishedTrack sebelum buat pipeline agar tidak
+      // terjadi referensi silang dengan proses sebelumnya.
+      this.finishedTrack = null;
       const prepared = await withTimeout(
         this.createAudioPipeline(next, useFadeIn),
         PIPELINE_CREATE_TIMEOUT_MS,
         "pembuatan audio pipeline",
       );
-      this.finishedTrack = null;
       metrics.pipelineMs = Date.now() - pipelineStartedAt;
 
       if (nonce !== this.playNonce) {
