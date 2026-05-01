@@ -309,19 +309,28 @@ function buildFastTrack(url) {
 export class YTDlpService {
   async resolve(query) {
     const normalizedQuery = normalizeQuery(query);
+    console.log(`[YTDLP:resolve] Resolving query | original="${truncate(query, 100)}" | normalized="${truncate(normalizedQuery, 100)}"`);
+
     const cached = getCache(normalizedQuery);
-    if (cached) return cached;
+    if (cached) {
+      console.log(`[YTDLP:resolve] Cache hit | type=${cached.type} | tracks=${cached.tracks?.length || 0}`);
+      return cached;
+    }
+    console.log(`[YTDLP:resolve] Cache miss, will resolve`);
 
     const isPlaylist = isUrl(normalizedQuery) && (/[?&]list=/.test(normalizedQuery) || /\/playlist\?/.test(normalizedQuery) || /[?&]start_radio=/.test(normalizedQuery));
     const target = isUrl(normalizedQuery) ? normalizedQuery : `ytsearch1:${normalizedQuery}`;
+    console.log(`[YTDLP:resolve] isPlaylist=${isPlaylist} | target="${truncate(target, 100)}"`);
 
     if (isUrl(normalizedQuery) && !isPlaylist) {
       try {
+        console.log(`[YTDLP:resolve] Trying fast stream selection for single URL`);
         const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
         const track = buildFastTrack(normalizedQuery);
         track.streamUrl = streamUrl;
         track.httpHeaders = httpHeaders;
         track.preparedAt = Date.now();
+        console.log(`[YTDLP:resolve] Fast track created | id=${track.id} | title=${truncate(track.title, 80)} | streamUrl=${Boolean(streamUrl)}`);
 
         const resultPayload = {
           type: 'single',
@@ -330,6 +339,7 @@ export class YTDlpService {
         setCache(normalizedQuery, resultPayload, 5 * 60 * 1000);
         return resultPayload;
       } catch (error) {
+        console.warn(`[YTDLP:resolve] Fast stream selection failed, falling back: ${error.message}`);
         // Fallback ke jalur lama bila direct stream cepat gagal.
       }
     }
@@ -385,11 +395,16 @@ export class YTDlpService {
   }
 
   async hydrate(track) {
+    console.log(`[YTDLP:hydrate] Hydrating track | title="${truncate(track?.title || 'unknown', 80)}" | hasStream=${Boolean(track?.streamUrl)} | preparedAt=${track?.preparedAt ? new Date(track.preparedAt).toISOString() : 'null'} | age=${track?.preparedAt ? (Date.now() - track.preparedAt) + 'ms' : 'N/A'}`);
+
     if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < STREAM_URL_MAX_AGE_MS) {
+      console.log(`[YTDLP:hydrate] Stream URL still fresh, skipping`);
       return track;
     }
 
     const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+    console.log(`[YTDLP:hydrate] Fetching fresh data for target="${truncate(target, 100)}"`);
+
     const args = [
       ...buildBaseArgs(),
       '-f',
@@ -401,7 +416,9 @@ export class YTDlpService {
 
     try {
       const { stdout, stderr, payload } = await runYtDlpJson(args);
+      console.log(`[YTDLP:hydrate] Got payload | id=${payload?.id} | title=${truncate(payload?.title || '', 80)}`);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
+      console.log(`[YTDLP:hydrate] Normalized entry | fetching stream selection...`);
       const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
 
       track.id = next.id;
@@ -416,34 +433,46 @@ export class YTDlpService {
       track.source = next.source;
       track.preparedAt = Date.now();
       track.metadataPending = false;
+      console.log(`[YTDLP:hydrate] Hydration complete | streamUrl=${Boolean(track.streamUrl)} | duration=${track.duration}s | uploader=${track.uploader}`);
       return track;
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      console.error(`[YTDLP:hydrate] Failed: ${detail.slice(0, 500)}`);
       throw new Error(`yt-dlp hydrate failed: ${detail.slice(0, 1000)}`);
     }
   }
 
   async ensureStreamUrl(track) {
+    console.log(`[YTDLP:ensureStream] Ensuring stream URL | title="${truncate(track?.title || 'unknown', 80)}" | hasStream=${Boolean(track?.streamUrl)} | age=${track?.preparedAt ? (Date.now() - track.preparedAt) + 'ms' : 'N/A'}`);
+
     if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < STREAM_URL_MAX_AGE_MS) {
+      console.log(`[YTDLP:ensureStream] Stream URL still fresh (age < ${STREAM_URL_MAX_AGE_MS}ms), skipping`);
       return track;
     }
 
     const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+    console.log(`[YTDLP:ensureStream] Fetching stream for target="${truncate(target, 100)}"`);
 
     try {
       const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
+      console.log(`[YTDLP:ensureStream] Got stream URL | streamUrl=${Boolean(streamUrl)} | hasHeaders=${Boolean(httpHeaders)}`);
       track.streamUrl = streamUrl;
       track.httpHeaders = httpHeaders || track.httpHeaders || null;
       track.preparedAt = Date.now();
       return track;
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      console.error(`[YTDLP:ensureStream] Failed: ${detail.slice(0, 500)}`);
       throw new Error(`yt-dlp stream failed: ${detail.slice(0, 1000)}`);
     }
   }
 
   async hydrateMetadata(track) {
+    console.log(`[YTDLP:hydrateMeta] Hydrating metadata | title="${truncate(track?.title || 'unknown', 80)}" | hasStream=${Boolean(track?.streamUrl)}`);
+
     const target = track.webpageUrl || track.url || track.searchQuery || track.title;
+    console.log(`[YTDLP:hydrateMeta] target="${truncate(target, 100)}"`);
+
     const args = [
       ...buildBaseArgs(),
       '-f',
@@ -455,6 +484,7 @@ export class YTDlpService {
 
     try {
       const { stdout, stderr, payload } = await runYtDlpJson(args);
+      console.log(`[YTDLP:hydrateMeta] Got payload | id=${payload?.id} | title=${truncate(payload?.title || '', 80)}`);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
 
       track.id = next.id;
@@ -467,12 +497,15 @@ export class YTDlpService {
       track.source = next.source;
       track.metadataPending = false;
       if (!track.streamUrl && next.streamUrl) {
+        console.log(`[YTDLP:hydrateMeta] Also got streamUrl from metadata`);
         track.streamUrl = next.streamUrl;
         track.preparedAt = Date.now();
       }
+      console.log(`[YTDLP:hydrateMeta] Complete | title="${truncate(track.title, 80)}" | duration=${track.duration}s | uploader=${track.uploader}`);
       return track;
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+      console.error(`[YTDLP:hydrateMeta] Failed: ${detail.slice(0, 500)}`);
       throw new Error(`yt-dlp metadata failed: ${detail.slice(0, 1000)}`);
     }
   }

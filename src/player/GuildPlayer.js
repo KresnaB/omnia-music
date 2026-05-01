@@ -109,6 +109,7 @@ const CROSSFADE_FADE_IN_DURATION_SECONDS = 2;
 
 export class GuildPlayer {
   constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
+    console.log(`[GUILDPLAYER:${guildId}] Creating GuildPlayer instance`);
     this.client = client;
     this.guildId = guildId;
     this.ytdlp = ytdlp;
@@ -165,6 +166,11 @@ export class GuildPlayer {
     this.player.on(AudioPlayerStatus.Playing, async () => {
       this.skipTransitionActive = false;
       this.playbackStartedAt = Date.now();
+      console.log(`[PLAYING:${this.guildId}] Playing event fired | current=${
+        this.current ? truncate(this.current.title, 80) : 'null'
+      } | metricsLogged=${
+        this.currentMetrics?.logged
+      } | queue=${this.queue.length} | autoplay=${this.autoplay}`);
       if (this.currentMetrics?.logged || !this.current) {
         return;
       }
@@ -192,9 +198,12 @@ export class GuildPlayer {
     this.player.on(AudioPlayerStatus.Idle, async () => {
       this.clearPipelineCompletionTimer();
 
+      console.log(`[IDLE:${this.guildId}] Idle event fired | skipTransitionActive=${this.skipTransitionActive} | skipRequested=${this.skipRequested} | stopRequested=${this.stopRequested} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length} | autoplay=${this.autoplay} | loopMode=${this.loopMode}`);
+
       // Jika crossfade skip sedang aktif, transisi ini berasal dari
       // skip() yang sudah menangani queue management. Jangan proses ulang.
       if (this.skipTransitionActive) {
+        console.log(`[IDLE:${this.guildId}] skipTransitionActive=true, skipping idle processing (crossfade skip in progress)`);
         this.skipRequested = false;
         this.stopRequested = false;
         this.playbackStartedAt = null;
@@ -206,10 +215,12 @@ export class GuildPlayer {
       }
 
       if (this.currentProcess) {
+        console.log(`[IDLE:${this.guildId}] Killing currentProcess (pid: ${this.currentProcess.pid})`);
         this.currentProcess.kill("SIGKILL");
         this.currentProcess = null;
       }
       if (this.currentSourceProcess) {
+        console.log(`[IDLE:${this.guildId}] Killing currentSourceProcess`);
         this.currentSourceProcess.kill("SIGKILL");
         this.currentSourceProcess = null;
       }
@@ -217,6 +228,9 @@ export class GuildPlayer {
       const finished = this.current;
       const wasSkipped = this.skipRequested;
       const wasStopped = this.stopRequested;
+      console.log(`[IDLE:${this.guildId}] Track finished | title=${
+        finished ? truncate(finished.title, 80) : 'null'
+      } | wasSkipped=${wasSkipped} | wasStopped=${wasStopped} | loopMode=${this.loopMode} | queueBefore=${this.queue.length} | historyBefore=${this.history.length}`);
       this.skipRequested = false;
       this.stopRequested = false;
       this.playbackStartedAt = null;
@@ -225,20 +239,25 @@ export class GuildPlayer {
       if (finished) {
         this.consecutiveErrors = 0;
         if (wasStopped) {
+          console.log(`[IDLE:${this.guildId}] wasStopped=true, resetting seekSeconds`);
           finished.seekSeconds = 0;
         } else if (wasSkipped) {
+          console.log(`[IDLE:${this.guildId}] wasSkipped=true, pushing to history`);
           finished.seekSeconds = 0;
           this.history.push(finished);
           if (this.history.length > 25) {
             this.history = this.history.slice(-25);
           }
         } else {
+          console.log(`[IDLE:${this.guildId}] Natural completion, calling handleTrackCompletion`);
           this.handleTrackCompletion(finished);
         }
       }
       this.finishedTrack = finished;
       this.current = null;
+      console.log(`[IDLE:${this.guildId}] State after completion | queue=${this.queue.length} | history=${this.history.length} | current=null`);
       if (wasStopped) {
+        console.log(`[IDLE:${this.guildId}] wasStopped=true, resetting idle timer and returning`);
         this.skipTransitionActive = false;
         this.resetIdleTimer();
         return;
@@ -246,11 +265,13 @@ export class GuildPlayer {
       // Defensive: pastikan tidak ada watchdog tersisa dari proses sebelumnya
       // yang bisa dipicu oleh kill() di atas sebelum queuePlayNext.
       this.clearPipelineCompletionTimer();
+      console.log(`[IDLE:${this.guildId}] Calling queuePlayNext("idle")`);
       await this.queuePlayNext("idle");
     });
 
     this.player.on("error", async (error) => {
-      console.error(`[player:${this.guildId}]`, error);
+      console.error(`[PLAYER_ERROR:${this.guildId}] Player error event`, error);
+      console.log(`[PLAYER_ERROR:${this.guildId}] consecutiveErrors=${this.consecutiveErrors} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length}`);
       if (this.currentProcess) {
         this.currentProcess.kill("SIGKILL");
         this.currentProcess = null;
@@ -525,7 +546,10 @@ export class GuildPlayer {
 
   schedulePipelineCompletionAdvance(track, nonce, reason = "pipeline-close") {
     const trackKey = getTrackIdentity(track);
+    console.log(`[WATCHDOG:${this.guildId}] Scheduling pipeline watchdog | track="${truncate(track?.title || 'unknown', 80)}" | nonce=${nonce} | reason=${reason} | timeoutMs=${PIPELINE_IDLE_WATCHDOG_MS} | stopRequested=${this.stopRequested} | skipRequested=${this.skipRequested} | currentNonce=${this.playNonce}`);
+
     if (!trackKey || this.stopRequested) {
+      console.log(`[WATCHDOG:${this.guildId}] Skipping: trackKey=${Boolean(trackKey)} stopRequested=${this.stopRequested}`);
       return;
     }
 
@@ -538,37 +562,53 @@ export class GuildPlayer {
         this.skipRequested ||
         this.playNonce !== nonce
       ) {
+        console.log(`[WATCHDOG:${this.guildId}] Watchdog firing but cancelled: stopReq=${this.stopRequested} skipReq=${this.skipRequested} nonceMatch=${this.playNonce === nonce}`);
         return;
       }
 
       const currentKey = getTrackIdentity(this.current);
       if (!currentKey || currentKey !== trackKey) {
+        console.log(`[WATCHDOG:${this.guildId}] Watchdog firing but track changed or null: currentKey=${currentKey} expected=${trackKey}`);
         return;
       }
 
       if (this.player.state.status === AudioPlayerStatus.Idle) {
+        console.log(`[WATCHDOG:${this.guildId}] Watchdog firing but player already idle`);
         return;
       }
 
       console.warn(
-        `[player:${this.guildId}] forcing idle transition after ${reason} for "${truncate(track.title, 80)}"`,
+        `[WATCHDOG:${this.guildId}] FORCING idle transition after ${reason} for "${truncate(track.title, 80)}"`,
       );
+      console.log(`[WATCHDOG:${this.guildId}] Calling player.stop(true) to force idle`);
       this.player.stop(true);
     }, PIPELINE_IDLE_WATCHDOG_MS);
   }
 
   maybeResumePlayback(reason = "queue-update") {
+    const blockedByStopRequested = this.stopRequested;
+    const blockedByCurrent = Boolean(this.current);
+    const blockedByEmptyQueue = this.queue.length === 0;
+    const blockedByPlayNextPromise = Boolean(this.playNextPromise);
+    const playerStatus = this.player.state.status;
+
+    console.log(`[MAYBE_RESUME:${this.guildId}] reason=${reason} | stopRequested=${blockedByStopRequested} | current=${blockedByCurrent} | queueEmpty=${blockedByEmptyQueue} | playNextPromise=${blockedByPlayNextPromise} | playerStatus=${playerStatus}`);
+
     if (
       this.stopRequested ||
       this.current ||
       this.queue.length === 0 ||
       this.playNextPromise
     ) {
+      console.log(`[MAYBE_RESUME:${this.guildId}] Blocked: stopReq=${blockedByStopRequested} current=${blockedByCurrent} emptyQueue=${blockedByEmptyQueue} hasPromise=${blockedByPlayNextPromise}`);
       return;
     }
 
     if (this.player.state.status === AudioPlayerStatus.Idle) {
+      console.log(`[MAYBE_RESUME:${this.guildId}] Player idle with ${this.queue.length} tracks in queue, calling queuePlayNext`);
       void this.queuePlayNext(reason);
+    } else {
+      console.log(`[MAYBE_RESUME:${this.guildId}] Player not idle (${playerStatus}), skipping`);
     }
   }
 
@@ -602,6 +642,8 @@ export class GuildPlayer {
   }
 
   async enqueue({ member, textChannel, query }) {
+    console.log(`[ENQUEUE:${this.guildId}] enqueue called | query="${truncate(query, 100)}" | requester=${member.displayName} (${member.id}) | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length} | autoplay=${this.autoplay} | autoplayPreparePromise=${Boolean(this.autoplayPreparePromise)}`);
+
     this.lastTextChannelId = textChannel.id;
     const voiceChannel = member.voice.channel;
     if (!voiceChannel) {
@@ -612,6 +654,7 @@ export class GuildPlayer {
     const requestStartedAt = Date.now();
 
     if (!isUrl(query)) {
+      console.log(`[ENQUEUE:${this.guildId}] Query is not URL, checking local cache first`);
       const localTrack = await this.audioCache.resolveQueryToTrack(query, {
         requester,
         addedAt: requestStartedAt,
@@ -620,14 +663,17 @@ export class GuildPlayer {
       });
 
       if (localTrack) {
+        console.log(`[ENQUEUE:${this.guildId}] Found in local cache: "${truncate(localTrack.title, 80)}"`);
         const isFirstPlay = !this.current;
         await this.ensureVoice(voiceChannel);
         this.insertUserTracks([localTrack]);
         void this.publishNowPlaying("queue-update");
 
         if (!this.current) {
+          console.log(`[ENQUEUE:${this.guildId}] isFirstPlay=${isFirstPlay}, calling queuePlayNext("enqueue")`);
           void this.queuePlayNext("enqueue");
         } else {
+          console.log(`[ENQUEUE:${this.guildId}] Not first, preloading upcoming tracks`);
           void this.preloadUpcomingTracks();
         }
 
@@ -645,7 +691,10 @@ export class GuildPlayer {
         };
       }
 
+      console.log(`[ENQUEUE:${this.guildId}] Not found in local cache | youtubeStatus=${this.youtubeStatus}`);
+
       if (this.youtubeStatus === "down") {
+        console.log(`[ENQUEUE:${this.guildId}] YouTube is down, trying cache failover`);
         const fallbackTrack = await this.buildCacheFallbackTrack({
           requester,
           originalQuery: `Cache failover untuk: ${query}`,
@@ -653,6 +702,7 @@ export class GuildPlayer {
         });
 
         if (fallbackTrack) {
+          console.log(`[ENQUEUE:${this.guildId}] Cache failover track found: "${truncate(fallbackTrack.title, 80)}"`);
           await this.ensureVoice(voiceChannel);
           this.insertUserTracks([fallbackTrack]);
           void this.publishNowPlaying("queue-update");
@@ -669,8 +719,12 @@ export class GuildPlayer {
             failover: true,
             tracks: [fallbackTrack],
           };
+        } else {
+          console.log(`[ENQUEUE:${this.guildId}] No cache failover available either, will try YouTube`);
         }
       }
+    } else {
+      console.log(`[ENQUEUE:${this.guildId}] Query is a URL`);
     }
 
     this.youtubeStatus = "unknown";
@@ -679,16 +733,24 @@ export class GuildPlayer {
     // Jalankan join voice + resolve metadata secara paralel (hemat 2-4 detik)
     let resolved;
     try {
+      console.log(`[ENQUEUE:${this.guildId}] Resolving query via ytdlp and joining voice...`);
       [, resolved] = await Promise.all([
         this.ensureVoice(voiceChannel),
         this.ytdlp.resolve(query),
       ]);
+      console.log(`[ENQUEUE:${this.guildId}] Resolve succeeded | type=${resolved.type} | tracks=${resolved.tracks?.length || 0}`);
       this.setYoutubeHealthy();
     } catch (error) {
-      if (!isYoutubeAvailabilityError(error)) {
+      console.error(`[ENQUEUE:${this.guildId}] Resolve failed: ${error.message}`);
+      const isYoutubeError = isYoutubeAvailabilityError(error);
+      console.log(`[ENQUEUE:${this.guildId}] Error analysis | isYoutubeError=${isYoutubeError}`);
+
+      if (!isYoutubeError) {
+        console.log(`[ENQUEUE:${this.guildId}] Non-YouTube error, throwing`);
         throw error;
       }
 
+      console.log(`[ENQUEUE:${this.guildId}] YouTube error, trying cache failover`);
       this.setYoutubeUnavailable(error.message);
       const fallbackTrack = await this.buildCacheFallbackTrack({
         requester,
@@ -697,15 +759,18 @@ export class GuildPlayer {
       });
 
       if (!fallbackTrack) {
+        console.error(`[ENQUEUE:${this.guildId}] No cache fallback available, throwing`);
         throw new Error(
           `YouTube sedang error dan cache lokal kosong: ${truncate(error.message || "unknown error", 250)}`,
         );
       }
 
+      console.log(`[ENQUEUE:${this.guildId}] Cache fallback found: "${truncate(fallbackTrack.title, 80)}"`);
       this.insertUserTracks([fallbackTrack]);
       void this.publishNowPlaying("queue-update");
 
       if (!this.current) {
+        console.log(`[ENQUEUE:${this.guildId}] Calling queuePlayNext("enqueue-failover")`);
         void this.queuePlayNext("enqueue-failover");
       } else {
         void this.preloadUpcomingTracks();
@@ -719,6 +784,7 @@ export class GuildPlayer {
       };
     }
 
+    console.log(`[ENQUEUE:${this.guildId}] YouTube resolve succeeded, building tracks`);
     const tracks = resolved.tracks.map((track) => ({
       ...track,
       requester,
@@ -728,23 +794,27 @@ export class GuildPlayer {
     }));
 
     if (resolved.type === "playlist" && tracks[0]) {
+      console.log(`[ENQUEUE:${this.guildId}] Pre-hydrating first playlist track...`);
       try {
         await this.ytdlp.hydrate(tracks[0]);
       } catch (error) {
         console.warn(
-          `[player:${this.guildId}] first playlist track pre-hydrate failed:`,
-          error.message,
+          `[ENQUEUE:${this.guildId}] first playlist track pre-hydrate failed: ${error.message}`,
         );
       }
     }
 
+    console.log(`[ENQUEUE:${this.guildId}] Inserting ${tracks.length} tracks into queue`);
     this.insertUserTracks(tracks);
     void this.publishNowPlaying("queue-update");
 
     const isFirstPlay = !this.current;
+    console.log(`[ENQUEUE:${this.guildId}] isFirstPlay=${isFirstPlay} | resolvedTrackCount=${tracks.length} | resolvedType=${resolved.type}`);
     if (!this.current) {
+      console.log(`[ENQUEUE:${this.guildId}] No current track, calling queuePlayNext("enqueue")`);
       void this.queuePlayNext("enqueue");
     } else {
+      console.log(`[ENQUEUE:${this.guildId}] Current track exists, calling preloadUpcomingTracks`);
       void this.preloadUpcomingTracks();
     }
 
@@ -758,20 +828,33 @@ export class GuildPlayer {
   }
 
   insertUserTracks(tracks) {
+    const autoplayCount = this.queue.filter(t => t.requester?.id === "autoplay").length;
+    console.log(`[INSERT_TRACKS:${this.guildId}] Inserting ${tracks.length} user tracks | queueBefore=${this.queue.length} | autoplayInQueue=${autoplayCount} | tracks=${tracks.map(t => truncate(t.title, 50)).join(', ')}`);
+
     this.shuffleActive = false;
 
     // Hapus lagu autoplay lama yang sudah mengantre
+    const removed = this.queue.filter(
+      (track) => track.requester?.id === "autoplay",
+    );
     this.queue = this.queue.filter(
       (track) => track.requester?.id !== "autoplay",
     );
 
+    console.log(`[INSERT_TRACKS:${this.guildId}] Removed ${removed.length} autoplay tracks from queue | queueAfterRemove=${this.queue.length}`);
+
     // Batalkan/reset referensi background promise autoplay lama jika ada
+    if (this.autoplaySeedId) {
+      console.log(`[INSERT_TRACKS:${this.guildId}] Resetting autoplaySeedId (was ${this.autoplaySeedId})`);
+    }
     this.autoplaySeedId = null;
 
     this.queue.push(...tracks);
+    console.log(`[INSERT_TRACKS:${this.guildId}] Queue after push=${this.queue.length}`);
   }
 
   async ensureVoice(voiceChannel) {
+    console.log(`[VOICE:${this.guildId}] ensureVoice | channelId=${voiceChannel.id} | channelName=${voiceChannel.name}`);
     this.voiceChannelId = voiceChannel.id;
     clearTimeout(this.voiceReconnectTimer);
     this.voiceReconnectTimer = null;
@@ -1030,10 +1113,18 @@ export class GuildPlayer {
   }
 
   handleTrackCompletion(track) {
+    console.log(`[TRACK_COMPLETE:${this.guildId}] Track completed naturally | title=${
+      truncate(track.title, 80)
+    } | loopMode=${this.loopMode} | queueBefore=${this.queue.length} | historyBefore=${this.history.length}`);
+
     if (this.loopMode === "track") {
+      console.log(`[TRACK_COMPLETE:${this.guildId}] loopMode=track, unshifting clone back to queue`);
       this.queue.unshift(cloneTrack(track));
     } else if (this.loopMode === "queue") {
+      console.log(`[TRACK_COMPLETE:${this.guildId}] loopMode=queue, pushing clone to end of queue`);
       this.queue.push(cloneTrack(track));
+    } else {
+      console.log(`[TRACK_COMPLETE:${this.guildId}] loopMode=off, not re-adding to queue`);
     }
 
     track.seekSeconds = 0;
@@ -1044,6 +1135,7 @@ export class GuildPlayer {
     if (this.queue.length <= 1) {
       this.shuffleActive = false;
     }
+    console.log(`[TRACK_COMPLETE:${this.guildId}] After completion | queue=${this.queue.length} | history=${this.history.length} | shuffleActive=${this.shuffleActive}`);
   }
 
   addLyricMessage(msg) {
@@ -1115,12 +1207,19 @@ export class GuildPlayer {
   }
 
   async publishIdleMessage() {
+    console.log(`[PUBLISH:${this.guildId}] publishIdleMessage called | lastTextChannelId=${this.lastTextChannelId || 'null'} | queue=${this.queue.length} | current=${Boolean(this.current)} | autoplay=${this.autoplay}`);
     const runUpdate = async () => {
-      if (!this.lastTextChannelId) return;
+      if (!this.lastTextChannelId) {
+        console.log(`[PUBLISH:${this.guildId}] No lastTextChannelId, skipping idle message`);
+        return;
+      }
       const channel = await this.client.channels
         .fetch(this.lastTextChannelId)
         .catch(() => null);
-      if (!channel?.isTextBased()) return;
+      if (!channel?.isTextBased()) {
+        console.log(`[PUBLISH:${this.guildId}] Channel not text-based or not found`);
+        return;
+      }
 
       const embed = new EmbedBuilder()
         .setColor(0xf1c40f)
@@ -1159,23 +1258,28 @@ export class GuildPlayer {
 
   async preloadUpcomingTracks() {
     const nextTrack = this.queue[0];
+    console.log(`[PRELOAD:${this.guildId}] preloadUpcomingTracks | nextTrack=${nextTrack ? truncate(nextTrack.title, 80) : 'null'} | inFlight=${nextTrack?.id ? this.preloadInFlight.has(nextTrack.id) : 'N/A'} | queue=${this.queue.length}`);
+
     if (!nextTrack?.id || this.preloadInFlight.has(nextTrack.id)) {
+      console.log(`[PRELOAD:${this.guildId}] Skipping: no nextTrack or already in flight`);
       return;
     }
 
     this.preloadInFlight.add(nextTrack.id);
+    console.log(`[PRELOAD:${this.guildId}] Preloading track "${truncate(nextTrack.title, 80)}" (id=${nextTrack.id})`);
     try {
       await this.prepareTrackForPlayback(nextTrack, {
         trigger: "preload",
         allowBackgroundDownload: true,
       });
+      console.log(`[PRELOAD:${this.guildId}] Preload successful for "${truncate(nextTrack.title, 80)}"`);
     } catch (error) {
       console.warn(
-        `[player:${this.guildId}] preload failed for ${nextTrack.title}:`,
-        error.message,
+        `[PRELOAD:${this.guildId}] preload failed for ${nextTrack.title}: ${error.message}`,
       );
     } finally {
       this.preloadInFlight.delete(nextTrack.id);
+      console.log(`[PRELOAD:${this.guildId}] Preload finished for id=${nextTrack.id}`);
     }
   }
 
@@ -1266,33 +1370,46 @@ export class GuildPlayer {
     track,
     { trigger = "play", allowBackgroundDownload = true } = {},
   ) {
+    console.log(`[PREPARE:${this.guildId}] prepareTrackForPlayback | title="${truncate(track?.title || 'unknown', 80)}" | trigger=${trigger} | allowBgDownload=${allowBackgroundDownload} | localPath=${Boolean(track?.localPath)} | streamUrl=${Boolean(track?.streamUrl)} | youtubeStatus=${this.youtubeStatus} | metadataPending=${track?.metadataPending}`);
+
     if (track.localPath) {
+      console.log(`[PREPARE:${this.guildId}] Already has localPath, using cache`);
       track.cacheStatus = "cached";
       track.cacheError = null;
       return track;
     }
 
+    console.log(`[PREPARE:${this.guildId}] Checking audio cache for local reference...`);
     await this.audioCache.hydrateLocalReference(track);
 
     if (track.localPath) {
+      console.log(`[PREPARE:${this.guildId}] Found in audio cache: ${track.localPath}`);
       track.cacheStatus = "cached";
       track.cacheError = null;
       return track;
     }
 
+    console.log(`[PREPARE:${this.guildId}] Not in cache, need stream URL`);
+
     if (this.youtubeStatus === "down") {
+      console.error(`[PREPARE:${this.guildId}] YouTube is down, throwing`);
       throw new Error(
         "YouTube sedang error, playback dibatasi ke lagu cache lokal.",
       );
     }
 
     if (track.metadataPending) {
+      console.log(`[PREPARE:${this.guildId}] Track has pending metadata, hydrating...`);
       await this.ytdlp.hydrateMetadata(track);
+      console.log(`[PREPARE:${this.guildId}] Metadata hydrated`);
     }
 
+    console.log(`[PREPARE:${this.guildId}] Ensuring stream URL...`);
     await this.ytdlp.ensureStreamUrl(track);
+    console.log(`[PREPARE:${this.guildId}] Stream URL ready | streamUrl=${Boolean(track.streamUrl)}`);
 
     if (allowBackgroundDownload) {
+      console.log(`[PREPARE:${this.guildId}] Queueing cache download in background`);
       this.queueCacheDownload(track);
     } else {
       track.cacheStatus = "skipped";
@@ -1304,11 +1421,15 @@ export class GuildPlayer {
   async prepareAutoplayTrack() {
     const seed = this.current || this.history[this.history.length - 1];
     const seedKey = getTrackIdentity(seed);
+    console.log(`[AUTOPLAY:${this.guildId}] prepareAutoplayTrack called | autoplay=${this.autoplay} | seed=${seed ? truncate(seed.title, 80) : 'null'} | seedKey=${seedKey || 'null'} | queue=${this.queue.length} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | historyLast=${this.history.length > 0 ? truncate(this.history[this.history.length-1].title, 50) : 'none'} | autoplayPreparePromise=${Boolean(this.autoplayPreparePromise)} | autoplaySeedId=${this.autoplaySeedId || 'null'}`);
+
     if (!this.autoplay || !seed) {
+      console.log(`[AUTOPLAY:${this.guildId}] Skipping: autoplay=${this.autoplay} seed=${Boolean(seed)}`);
       return;
     }
 
     if (this.queue.length > 0) {
+      console.log(`[AUTOPLAY:${this.guildId}] Queue has ${this.queue.length} tracks, preloading instead of autoplay`);
       await this.preloadUpcomingTracks();
       return;
     }
@@ -1317,32 +1438,36 @@ export class GuildPlayer {
       (track) => track.requester?.id === "autoplay",
     );
     if (hasAutoplayQueued) {
+      console.log(`[AUTOPLAY:${this.guildId}] Autoplay track already queued, skipping`);
       return;
     }
 
     if (this.autoplayPreparePromise && this.autoplaySeedId === seedKey) {
+      console.log(`[AUTOPLAY:${this.guildId}] Waiting for existing autoplayPreparePromise with same seedKey`);
       await this.autoplayPreparePromise;
       // Cek apakah promise tadi benar-benar menghasilkan track di queue
       const gotTrack = this.queue.some(
         (track) => track.requester?.id === "autoplay",
       );
       if (gotTrack) {
+        console.log(`[AUTOPLAY:${this.guildId}] Existing promise added track, queue now has ${this.queue.length} tracks`);
         return;
       }
       // Promise selesai tapi gagal push track — reset state dan lanjut retry
       this.autoplayPreparePromise = null;
       this.autoplaySeedId = null;
-      console.log(
-        `[player:${this.guildId}] autoplay promise selesai tanpa hasil, retry...`,
-      );
+      console.log(`[AUTOPLAY:${this.guildId}] autoplay promise selesai tanpa hasil, retry...`);
     }
 
     this.autoplaySeedId = seedKey;
+    console.log(`[AUTOPLAY:${this.guildId}] Starting autoplay preparation | seedKey=${seedKey} | youtubeStatus=${this.youtubeStatus}`);
+
     this.autoplayPreparePromise = (async () => {
       try {
         const enqueueCacheAutoplay = async (
           originalQuery = "Cache Autoplay",
         ) => {
+          console.log(`[AUTOPLAY:${this.guildId}] Trying cache autoplay | originalQuery="${originalQuery}" | seedKey=${seedKey}`);
           const cached = await this.buildCacheFallbackTrack({
             requester: { id: "autoplay", name: "Autoplay Cache" },
             originalQuery,
@@ -1350,34 +1475,48 @@ export class GuildPlayer {
           });
 
           if (cached && this.autoplaySeedId === seedKey) {
+            console.log(`[AUTOPLAY:${this.guildId}] Cache autoplay found track: "${truncate(cached.title, 80)}"`);
             this.queue.push(cached);
             this.shuffleActive = false;
             void this.publishNowPlaying("queue-update");
+            console.log(`[AUTOPLAY:${this.guildId}] Calling maybeResumePlayback after cache autoplay`);
             this.maybeResumePlayback("autoplay-cache-ready");
+          } else {
+            console.log(`[AUTOPLAY:${this.guildId}] Cache autoplay: no track found or seedId changed | cached=${Boolean(cached)} seedIdMatch=${this.autoplaySeedId === seedKey}`);
           }
           return Boolean(cached);
         };
 
         if (this.youtubeStatus === "down") {
+          console.log(`[AUTOPLAY:${this.guildId}] YouTube is down, trying cache`);
           await enqueueCacheAutoplay("Cache Autoplay");
           return;
         }
 
         if (needsAutoplaySeedHydration(seed)) {
+          console.log(`[AUTOPLAY:${this.guildId}] Seed needs hydration, calling hydrateMetadata`);
           await this.ytdlp.hydrateMetadata(seed);
+          console.log(`[AUTOPLAY:${this.guildId}] Seed hydrated`);
         }
 
         let query;
         if (seed.source === "youtube" && seed.id && seed.id.length === 11) {
           query = `https://www.youtube.com/watch?v=${seed.id}&list=RD${seed.id}`;
+          console.log(`[AUTOPLAY:${this.guildId}] Using YouTube mix query for autoplay: ${query}`);
         } else {
           query = `ytsearch5:${seed.uploader || seed.title} best hits audio`;
+          console.log(`[AUTOPLAY:${this.guildId}] Using search query for autoplay: ${query}`);
         }
 
+        console.log(`[AUTOPLAY:${this.guildId}] Resolving autoplay query...`);
         const auto = await this.ytdlp.resolve(query);
+        console.log(`[AUTOPLAY:${this.guildId}] Resolve returned ${auto.tracks.length} tracks`);
+
         const candidates = auto.tracks.filter(
           (t) => t.id !== seed.id && !this.history.some((h) => h.id === t.id),
         );
+        console.log(`[AUTOPLAY:${this.guildId}] Filtered candidates: ${candidates.length} tracks (excluded seed and history)`);
+
         const chosen =
           candidates.length > 0
             ? candidates[
@@ -1386,8 +1525,11 @@ export class GuildPlayer {
             : auto.tracks[0];
 
         if (!chosen) {
+          console.log(`[AUTOPLAY:${this.guildId}] No track chosen from autoplay results`);
           return;
         }
+
+        console.log(`[AUTOPLAY:${this.guildId}] Chosen track: "${truncate(chosen.title, 80)}" (id=${chosen.id})`);
 
         const prepared = {
           ...chosen,
@@ -1396,10 +1538,13 @@ export class GuildPlayer {
           originalQuery: "Autoplay Suggestion",
         };
 
+        console.log(`[AUTOPLAY:${this.guildId}] Hydrating chosen track...`);
         await this.ytdlp.hydrate(prepared);
+        console.log(`[AUTOPLAY:${this.guildId}] Track hydrated | localPath=${Boolean(prepared.localPath)} | streamUrl=${Boolean(prepared.streamUrl)}`);
 
         // Abaikan push jika referensi seed sudah di-reset oleh enqueue manual user
         if (this.autoplaySeedId !== seedKey) {
+          console.log(`[AUTOPLAY:${this.guildId}] seedId changed after hydration, aborting push | expected=${seedKey} actual=${this.autoplaySeedId}`);
           return;
         }
 
@@ -1418,20 +1563,30 @@ export class GuildPlayer {
         const existsInHistory = this.history.some(isDuplicate);
         const isCurrent = this.current && isDuplicate(this.current);
 
+        console.log(`[AUTOPLAY:${this.guildId}] Duplicate check | inQueue=${existsInQueue} | inHistory=${existsInHistory} | isCurrent=${isCurrent}`);
+
         if (!existsInQueue && !existsInHistory && !isCurrent) {
+          console.log(`[AUTOPLAY:${this.guildId}] Pushing autoplay track to queue | queueBefore=${this.queue.length}`);
           this.queue.push(prepared);
           this.shuffleActive = false;
           void this.publishNowPlaying("queue-update");
+          console.log(`[AUTOPLAY:${this.guildId}] Calling maybeResumePlayback | queueAfter=${this.queue.length} | playerStatus=${this.player.state.status}`);
           this.maybeResumePlayback("autoplay-ready");
+        } else {
+          console.log(`[AUTOPLAY:${this.guildId}] Track is duplicate, not adding to queue`);
         }
       } catch (error) {
+        console.error(`[AUTOPLAY:${this.guildId}] autoplay prepare error:`, error.message);
         const canFailoverToCache =
           isYoutubeAvailabilityError(error) ||
           isTransientNetworkError(error) ||
           this.youtubeStatus === "down";
 
+        console.log(`[AUTOPLAY:${this.guildId}] Error analysis | canFailoverToCache=${canFailoverToCache} | isYoutubeError=${isYoutubeAvailabilityError(error)} | isNetworkError=${isTransientNetworkError(error)} | youtubeStatus=${this.youtubeStatus}`);
+
         if (canFailoverToCache) {
           this.setYoutubeUnavailable(error.message);
+          console.log(`[AUTOPLAY:${this.guildId}] Trying cache failover after error`);
           const enqueued = await this.buildCacheFallbackTrack({
             requester: { id: "autoplay", name: "Autoplay Cache" },
             originalQuery: `Cache failover autoplay: ${seed.title || "Unknown"}`,
@@ -1439,29 +1594,40 @@ export class GuildPlayer {
           });
 
           if (enqueued && this.autoplaySeedId === seedKey) {
+            console.log(`[AUTOPLAY:${this.guildId}] Cache failover track found: "${truncate(enqueued.title, 80)}"`);
             this.queue.push(enqueued);
             this.shuffleActive = false;
             void this.publishNowPlaying("queue-update");
+            console.log(`[AUTOPLAY:${this.guildId}] Calling maybeResumePlayback after cache failover`);
             this.maybeResumePlayback("autoplay-failover-ready");
             return;
+          } else {
+            console.log(`[AUTOPLAY:${this.guildId}] Cache failover: no track found or seedId changed`);
           }
         }
 
         console.warn(
-          `[player:${this.guildId}] autoplay prepare failed:`,
+          `[AUTOPLAY:${this.guildId}] autoplay prepare failed:`,
           error.message,
         );
       } finally {
         if (this.autoplaySeedId === seedKey || this.autoplaySeedId === null) {
+          console.log(`[AUTOPLAY:${this.guildId}] Cleaning up autoplayPreparePromise | seedIdMatch=${this.autoplaySeedId === seedKey} | seedIdIsNull=${this.autoplaySeedId === null}`);
           this.autoplayPreparePromise = null;
+        } else {
+          console.log(`[AUTOPLAY:${this.guildId}] NOT cleaning up promise - seedId changed | current=${this.autoplaySeedId} | expected=${seedKey}`);
         }
       }
     })();
 
+    console.log(`[AUTOPLAY:${this.guildId}] Waiting for autoplayPreparePromise to complete...`);
     await this.autoplayPreparePromise;
+    console.log(`[AUTOPLAY:${this.guildId}] autoplayPreparePromise completed | queue=${this.queue.length}`);
   }
 
   async queuePlayNext(reason = "manual") {
+    console.log(`[QUEUE_NEXT:${this.guildId}] queuePlayNext called | reason=${reason} | hasExistingPromise=${Boolean(this.playNextPromise)} | queue=${this.queue.length} | current=${Boolean(this.current)} | stopRequested=${this.stopRequested}`);
+
     const previous = this.playNextPromise || Promise.resolve();
     const nextRun = previous.then(
       () => this.playNext(reason),
@@ -1469,6 +1635,7 @@ export class GuildPlayer {
     );
     this.playNextPromise = nextRun.finally(() => {
       if (this.playNextPromise === nextRun) {
+        console.log(`[QUEUE_NEXT:${this.guildId}] playNextPromise cleared after completion (reason=${reason})`);
         this.playNextPromise = null;
       }
     });
@@ -1476,30 +1643,44 @@ export class GuildPlayer {
   }
 
   async playNext(reason = "manual") {
+    console.log(`[PLAYNEXT:${this.guildId}] playNext called | reason=${reason} | queue=${this.queue.length} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | autoplay=${this.autoplay} | sleepUntil=${this.sleepUntil ? new Date(this.sleepUntil).toISOString() : 'null'} | stopRequested=${this.stopRequested} | consecutiveErrors=${this.consecutiveErrors}`);
+
     clearTimeout(this.idleTimeout);
     this.clearPipelineCompletionTimer();
 
     if (this.sleepUntil && Date.now() >= this.sleepUntil) {
+      console.log(`[PLAYNEXT:${this.guildId}] Sleep timer expired, stopping`);
       await this.stop({ disconnect: true });
       return;
     }
 
     if (this.queue.length === 0 && this.autoplay) {
+      console.log(`[PLAYNEXT:${this.guildId}] Queue empty with autoplay=true | autoplayPreparePromise=${Boolean(this.autoplayPreparePromise)} | autoplaySeedId=${this.autoplaySeedId || 'null'}`);
       // Jika masih ada background autoplay preparation dari toggleAutoplay(), tunggu dulu
       if (this.autoplayPreparePromise) {
+        console.log(`[PLAYNEXT:${this.guildId}] Waiting for existing autoplayPreparePromise...`);
         await this.autoplayPreparePromise;
+        console.log(`[PLAYNEXT:${this.guildId}] autoplayPreparePromise resolved | queue after=${this.queue.length}`);
       }
       // Jika background task gagal menambahkan track, coba prepare dari sini
       if (this.queue.length === 0) {
+        console.log(`[PLAYNEXT:${this.guildId}] Queue still empty after waiting, calling prepareAutoplayTrack directly`);
         this.autoplaySeedId = null;
         await this.prepareAutoplayTrack();
+        console.log(`[PLAYNEXT:${this.guildId}] prepareAutoplayTrack finished | queue=${this.queue.length}`);
+      } else {
+        console.log(`[PLAYNEXT:${this.guildId}] Queue has ${this.queue.length} tracks after waiting for autoplay promise`);
       }
+    } else {
+      console.log(`[PLAYNEXT:${this.guildId}] No autoplay needed: queueEmpty=${this.queue.length === 0} autoplay=${this.autoplay}`);
     }
 
     const next = this.queue.shift();
     this.current = next || null;
+    console.log(`[PLAYNEXT:${this.guildId}] Next track: ${next ? truncate(next.title, 80) : 'null'} | queueAfterShift=${this.queue.length}`);
 
     if (!next) {
+      console.log(`[PLAYNEXT:${this.guildId}] No next track, publishing idle message`);
       this.skipTransitionActive = false;
       await this.publishIdleMessage();
       this.resetIdleTimer();
@@ -1508,6 +1689,8 @@ export class GuildPlayer {
 
     this.playNonce += 1;
     const nonce = this.playNonce;
+    console.log(`[PLAYNEXT:${this.guildId}] Start processing track | nonce=${nonce} | title="${truncate(next.title, 80)}" | localPath=${Boolean(next.localPath)} | streamUrl=${Boolean(next.streamUrl)} | metadataPending=${next.metadataPending} | seekSeconds=${next.seekSeconds} | requester=${next.requester?.name || 'unknown'}`);
+
     const metrics = {
       requestStartedAt: next.requestStartedAt || next.addedAt || Date.now(),
       playNextStartedAt: Date.now(),
@@ -1521,19 +1704,22 @@ export class GuildPlayer {
       // tunggu preload selesai dulu (maks 30 detik) supaya tidak terjadi
       // dua panggilan yt-dlp bersamaan untuk track yang sama.
       if (next.id && this.preloadInFlight.has(next.id)) {
+        console.log(`[PLAYNEXT:${this.guildId}] Track is being preloaded, waiting for preload to finish...`);
         const waitStart = Date.now();
         while (this.preloadInFlight.has(next.id)) {
           if (Date.now() - waitStart > 30_000) {
             console.warn(
-              `[player:${this.guildId}] preload for "${truncate(next.title, 80)}" taking too long, proceeding anyway`,
+              `[PLAYNEXT:${this.guildId}] preload for "${truncate(next.title, 80)}" taking too long, proceeding anyway`,
             );
             break;
           }
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
+        console.log(`[PLAYNEXT:${this.guildId}] Preload wait finished | waited=${Date.now() - waitStart}ms`);
       }
 
       const hydrateStartedAt = Date.now();
+      console.log(`[PLAYNEXT:${this.guildId}] Calling prepareTrackForPlayback | trigger=${reason} | allowBackgroundDownload=true`);
       await withTimeout(
         this.prepareTrackForPlayback(next, {
           trigger: reason,
@@ -1543,9 +1729,11 @@ export class GuildPlayer {
         "persiapan track",
       );
       metrics.hydrateMs = Date.now() - hydrateStartedAt;
+      console.log(`[PLAYNEXT:${this.guildId}] prepareTrackForPlayback done | hydrateMs=${metrics.hydrateMs}ms | localPath=${Boolean(next.localPath)} | streamUrl=${Boolean(next.streamUrl)} | cacheStatus=${next.cacheStatus || 'none'}`);
 
       const pipelineStartedAt = Date.now();
       const useFadeIn = Boolean(this.finishedTrack) && reason === "idle";
+      console.log(`[PLAYNEXT:${this.guildId}] Creating audio pipeline | useFadeIn=${useFadeIn} | finishedTrack=${Boolean(this.finishedTrack)} | reason=${reason}`);
       // Lepas referensi finishedTrack sebelum buat pipeline agar tidak
       // terjadi referensi silang dengan proses sebelumnya.
       this.finishedTrack = null;
@@ -1555,17 +1743,21 @@ export class GuildPlayer {
         "pembuatan audio pipeline",
       );
       metrics.pipelineMs = Date.now() - pipelineStartedAt;
+      console.log(`[PLAYNEXT:${this.guildId}] Pipeline created | pipelineMs=${metrics.pipelineMs}ms`);
 
       if (nonce !== this.playNonce) {
+        console.log(`[PLAYNEXT:${this.guildId}] Nonce mismatch (expected=${nonce}, actual=${this.playNonce}), killing pipeline`);
         prepared.process.kill("SIGKILL");
         prepared.sourceProcess?.kill("SIGKILL");
         return;
       }
 
       if (this.currentProcess) {
+        console.log(`[PLAYNEXT:${this.guildId}] Killing old currentProcess`);
         this.currentProcess.kill("SIGKILL");
       }
       if (this.currentSourceProcess) {
+        console.log(`[PLAYNEXT:${this.guildId}] Killing old currentSourceProcess`);
         this.currentSourceProcess.kill("SIGKILL");
       }
 
@@ -1574,16 +1766,22 @@ export class GuildPlayer {
       this.currentSourceProcess = prepared.sourceProcess || null;
       this.currentMetrics = metrics;
       prepared.process.once("close", () => {
+        console.log(`[PLAYNEXT:${this.guildId}] ffmpeg process closed for nonce=${nonce}`);
         this.schedulePipelineCompletionAdvance(next, nonce, "ffmpeg-close");
       });
+      console.log(`[PLAYNEXT:${this.guildId}] Calling player.play() with resource for "${truncate(next.title, 80)}"`);
       this.player.play(prepared.resource);
       await this.publishNowPlaying(reason);
       void this.preloadUpcomingTracks();
       if (this.autoplay && this.queue.length === 0) {
+        console.log(`[PLAYNEXT:${this.guildId}] Autoplay on and queue empty after play, triggering prepareAutoplayTrack`);
         void this.prepareAutoplayTrack();
+      } else {
+        console.log(`[PLAYNEXT:${this.guildId}] No autoplay needed: autoplay=${this.autoplay} queue=${this.queue.length}`);
       }
     } catch (error) {
-      console.error(`[player:${this.guildId}] playNext failed:`, error.message);
+      console.error(`[PLAYNEXT:${this.guildId}] playNext failed for "${truncate(next?.title || 'unknown', 80)}":`, error.message);
+      console.log(`[PLAYNEXT:${this.guildId}] Error details | consecutiveErrors=${this.consecutiveErrors} | isYoutubeError=${isYoutubeAvailabilityError(error)} | isNetworkError=${isTransientNetworkError(error)}`);
       if (isYoutubeAvailabilityError(error) || isTransientNetworkError(error)) {
         const isNetwork = isTransientNetworkError(error);
         if (isNetwork) {
@@ -1909,9 +2107,11 @@ export class GuildPlayer {
             );
 
           if (!canRetryPipeWithPcm) {
+            console.log(`[PIPELINE:${this.guildId}] Cannot retry pipe with PCM, throwing`);
             throw pipeError;
           }
 
+          console.log(`[PIPELINE:${this.guildId}] Retrying yt-dlp pipe with PCM fallback`);
           processState.sourceProcess?.kill("SIGKILL");
           const sourceProcessPcm = spawn(
             config.ytDlpPath,
@@ -1929,7 +2129,9 @@ export class GuildPlayer {
           );
           try {
             probed = await processState.probe;
+            console.log(`[PIPELINE:${this.guildId}] yt-dlp pipe (PCM) probe succeeded`);
           } catch (pipeRetryError) {
+            console.error(`[PIPELINE:${this.guildId}] yt-dlp pipe (PCM) also failed: ${pipeRetryError.message}`);
             processState.process.kill("SIGKILL");
             processState.sourceProcess?.kill("SIGKILL");
             throw pipeRetryError;
@@ -1937,13 +2139,17 @@ export class GuildPlayer {
         }
       } else {
         if (!canRetryWithPcm) {
+          console.log(`[PIPELINE:${this.guildId}] Cannot retry, throwing original error`);
           throw error;
         }
 
+        console.log(`[PIPELINE:${this.guildId}] Retrying with PCM (local/url input)`);
         processState = this.spawnAudioProcess(track, "pcm", primaryInputMode, null, fadeIn);
         try {
           probed = await processState.probe;
+          console.log(`[PIPELINE:${this.guildId}] PCM retry probe succeeded`);
         } catch (retryError) {
+          console.error(`[PIPELINE:${this.guildId}] PCM retry also failed: ${retryError.message}`);
           processState.process.kill("SIGKILL");
           processState.sourceProcess?.kill("SIGKILL");
           throw retryError;
@@ -1951,6 +2157,7 @@ export class GuildPlayer {
       }
     }
     processState.markProbeReady();
+    console.log(`[PIPELINE:${this.guildId}] Pipeline created successfully | inputType=${probed.type} | pid=${processState.process.pid}`);
     const resource = createAudioResource(probed.stream, {
       inputType: probed.type,
       metadata: track,
@@ -1958,6 +2165,7 @@ export class GuildPlayer {
 
     const finalStderr = processState.stderr().trim();
     processState.process.once("close", (code) => {
+      console.log(`[PIPELINE:${this.guildId}] ffmpeg process closed | pid=${processState.process.pid} | code=${code} | stderr=${finalStderr ? truncate(finalStderr, 200) : 'none'}`);
       if (this.currentProcess === processState.process) {
         this.currentProcess = null;
       }
@@ -1978,9 +2186,13 @@ export class GuildPlayer {
     };
   }
 
-  async publishNowPlaying() {
+  async publishNowPlaying(reason) {
+    console.log(`[PUBLISH:${this.guildId}] publishNowPlaying | reason=${reason || 'update'} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | hasMessage=${Boolean(this.currentMessage)}`);
     const runUpdate = async () => {
-      if (!this.current || !this.lastTextChannelId) return;
+      if (!this.current || !this.lastTextChannelId) {
+        console.log(`[PUBLISH:${this.guildId}] Skipping: current=${Boolean(this.current)} channelId=${Boolean(this.lastTextChannelId)}`);
+        return;
+      }
       const channel = await this.client.channels
         .fetch(this.lastTextChannelId)
         .catch(() => null);
@@ -2121,11 +2333,15 @@ export class GuildPlayer {
   }
 
   async skip() {
+    console.log(`[SKIP:${this.guildId}] skip() called | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length} | skipTransitionActive=${this.skipTransitionActive} | skipRequested=${this.skipRequested} | playerStatus=${this.player.state.status} | playNextPromise=${Boolean(this.playNextPromise)}`);
+
     if (!this.current && !this.playNextPromise) {
+      console.log(`[SKIP:${this.guildId}] No current track and no playNextPromise, throwing error`);
       throw new Error("Tidak ada lagu yang sedang diputar");
     }
 
     if (this.skipTransitionActive) {
+      console.log(`[SKIP:${this.guildId}] skipTransitionActive already true, returning false (skip in progress)`);
       return false;
     }
 
@@ -2133,8 +2349,10 @@ export class GuildPlayer {
     this.skipRequested = true;
     this.skipTransitionActive = true;
     this.playNonce += 1;
+    console.log(`[SKIP:${this.guildId}] State set | skipRequested=true | skipTransitionActive=true | playNonce=${this.playNonce}`);
 
     if (this.player.state.status === AudioPlayerStatus.Idle) {
+      console.log(`[SKIP:${this.guildId}] Player is idle, handling skip manually`);
       if (this.current) {
         const finished = this.current;
         finished.seekSeconds = 0;
@@ -2142,9 +2360,11 @@ export class GuildPlayer {
         if (this.history.length > 25) {
           this.history = this.history.slice(-25);
         }
+        console.log(`[SKIP:${this.guildId}] Pushed idle current to history | history=${this.history.length}`);
       }
       this.current = null;
       this.skipRequested = false;
+      console.log(`[SKIP:${this.guildId}] Calling queuePlayNext("skip")`);
       void this.queuePlayNext("skip");
       return true;
     }
@@ -2154,9 +2374,13 @@ export class GuildPlayer {
     const currentTrack = this.current;
     const nextTrack = this.queue[0];
 
+    console.log(`[SKIP:${this.guildId}] Attempting crossfade skip | nonce=${nonce} | currentTrack=${currentTrack ? truncate(currentTrack.title, 80) : 'null'} | nextTrack=${nextTrack ? truncate(nextTrack.title, 80) : 'null'} | nextTrackHasStream=${Boolean(nextTrack?.streamUrl || nextTrack?.localPath)}`);
+
     if (!currentTrack || !nextTrack || (!currentTrack.streamUrl && !currentTrack.localPath)) {
+      console.log(`[SKIP:${this.guildId}] Crossfade not possible, falling back to hard stop: missing current=${Boolean(currentTrack)} missing next=${Boolean(nextTrack)} hasStream=${Boolean(nextTrack?.streamUrl || nextTrack?.localPath)}`);
       // Fallback: skip without crossfade
       this.skipTransitionActive = false;
+      console.log(`[SKIP:${this.guildId}] Calling player.stop(true) for hard skip`);
       this.player.stop(true);
       return true;
     }
@@ -2166,8 +2390,11 @@ export class GuildPlayer {
       ? (currentTrack.duration || 0) - currentPosition
       : CROSSFADE_DURATION_SECONDS + 1; // durasi tidak diketahui, asumsikan cukup
 
+    console.log(`[SKIP:${this.guildId}] Crossfade check | currentPosition=${currentPosition}s | remainingSeconds=${remainingSeconds}s | trackDuration=${currentTrack.duration}s`);
+
     // Crossfade hanya jika remaining time cukup
     if (remainingSeconds < 1) {
+      console.log(`[SKIP:${this.guildId}] Remaining time < 1s, falling back to hard stop`);
       this.skipTransitionActive = false;
       this.player.stop(true);
       return true;
@@ -2175,6 +2402,7 @@ export class GuildPlayer {
 
     try {
       // Prepare next track for crossfade
+      console.log(`[SKIP:${this.guildId}] Preparing next track for crossfade...`);
       const hydrateStartedAt = Date.now();
       await withTimeout(
         this.prepareTrackForPlayback(nextTrack, {
@@ -2184,10 +2412,15 @@ export class GuildPlayer {
         TRACK_PREPARE_TIMEOUT_MS,
         "persiapan track skip crossfade",
       );
+      console.log(`[SKIP:${this.guildId}] Next track prepared for crossfade | hydrateMs=${Date.now() - hydrateStartedAt}ms`);
 
-      if (nonce !== this.playNonce) return true;
+      if (nonce !== this.playNonce) {
+        console.log(`[SKIP:${this.guildId}] Nonce changed after hydration, aborting`);
+        return true;
+      }
 
       const args = this.buildCrossfadeFfmpegArgs(currentTrack, nextTrack, currentPosition);
+      console.log(`[SKIP:${this.guildId}] Spawning crossfade ffmpeg process...`);
       const process = spawn(config.ffmpegPath, args, {
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -2214,17 +2447,20 @@ export class GuildPlayer {
         });
       });
 
+      console.log(`[SKIP:${this.guildId}] Probing crossfade stream...`);
       const probed = await Promise.race([
         demuxProbe(process.stdout),
         startupFailure,
       ]);
 
       if (nonce !== this.playNonce) {
+        console.log(`[SKIP:${this.guildId}] Nonce changed after probe, killing process`);
         process.kill("SIGKILL");
         return true;
       }
 
       probeReady = true;
+      console.log(`[SKIP:${this.guildId}] Crossfade stream probed successfully | inputType=${probed.type}`);
 
       const resource = createAudioResource(probed.stream, {
         inputType: probed.type,
@@ -2233,9 +2469,11 @@ export class GuildPlayer {
 
       // Kill old processes
       if (this.currentProcess) {
+        console.log(`[SKIP:${this.guildId}] Killing old currentProcess`);
         this.currentProcess.kill("SIGKILL");
       }
       if (this.currentSourceProcess) {
+        console.log(`[SKIP:${this.guildId}] Killing old currentSourceProcess`);
         this.currentSourceProcess.kill("SIGKILL");
       }
 
@@ -2244,6 +2482,7 @@ export class GuildPlayer {
       this.currentSourceProcess = null;
 
       process.once("close", () => {
+        console.log(`[SKIP:${this.guildId}] Crossfade ffmpeg closed`);
         this.schedulePipelineCompletionAdvance(nextTrack, nonce, "crossfade-close");
       });
 
@@ -2257,6 +2496,8 @@ export class GuildPlayer {
         this.history = this.history.slice(-25);
       }
 
+      console.log(`[SKIP:${this.guildId}] Crossfade state | queueAfterShift=${this.queue.length} | history=${this.history.length}`);
+
       this.current = nextTrack;
       this.currentMetrics = {
         requestStartedAt: nextTrack.requestStartedAt || nextTrack.addedAt || Date.now(),
@@ -2266,21 +2507,24 @@ export class GuildPlayer {
         logged: false,
       };
 
+      console.log(`[SKIP:${this.guildId}] Playing crossfade resource for "${truncate(nextTrack.title, 80)}"`);
       this.player.play(resource);
       void this.publishNowPlaying("skip-crossfade");
       void this.preloadUpcomingTracks();
       if (this.autoplay && this.queue.length === 0) {
+        console.log(`[SKIP:${this.guildId}] Queue empty after crossfade, preparing autoplay`);
         void this.prepareAutoplayTrack();
       }
     } catch (error) {
       console.warn(
-        `[player:${this.guildId}] crossfade skip failed, falling back: ${error.message}`,
+        `[SKIP:${this.guildId}] crossfade skip failed, falling back: ${error.message}`,
       );
       // Fallback: regular skip
       this.playNonce = nonce;
       this.current = currentTrack;
       this.queue.unshift(nextTrack);
       this.skipTransitionActive = false;
+      console.log(`[SKIP:${this.guildId}] Fallback: calling player.stop(true)`);
       this.player.stop(true);
     }
 
@@ -2288,6 +2532,8 @@ export class GuildPlayer {
   }
 
   async stop({ disconnect = false } = {}) {
+    console.log(`[STOP:${this.guildId}] stop() called | disconnect=${disconnect} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length} | autoplay=${this.autoplay} | stopRequested=${this.stopRequested}`);
+
     this.clearPipelineCompletionTimer();
     clearTimeout(this.crossfadeBufferTimer);
     this.crossfadeBufferTimer = null;
@@ -2313,10 +2559,12 @@ export class GuildPlayer {
     this.player.stop(true);
 
     if (this.currentProcess) {
+      console.log(`[STOP:${this.guildId}] Killing currentProcess`);
       this.currentProcess.kill("SIGKILL");
       this.currentProcess = null;
     }
     if (this.currentSourceProcess) {
+      console.log(`[STOP:${this.guildId}] Killing currentSourceProcess`);
       this.currentSourceProcess.kill("SIGKILL");
       this.currentSourceProcess = null;
     }
@@ -2329,8 +2577,11 @@ export class GuildPlayer {
 
     if (disconnect) {
       const connection = getVoiceConnection(this.guildId);
+      console.log(`[STOP:${this.guildId}] Destroying voice connection`);
       connection?.destroy();
     }
+
+    console.log(`[STOP:${this.guildId}] Stop complete`);
   }
 
   togglePause() {
@@ -2346,12 +2597,15 @@ export class GuildPlayer {
   }
 
   async seek(seconds) {
+    console.log(`[SEEK:${this.guildId}] seek(${seconds}) | current=${this.current ? truncate(this.current.title, 80) : 'null'}`);
     if (!this.current) throw new Error("Tidak ada lagu yang sedang diputar");
     this.current.seekSeconds = Math.max(0, seconds);
+    console.log(`[SEEK:${this.guildId}] Setting seekSeconds=${this.current.seekSeconds}, unshifting to queue, stopping player`);
     this.queue.unshift(this.current);
     this.current = null;
     this.playNonce += 1;
     this.player.stop(true);
+    console.log(`[SEEK:${this.guildId}] seek done | queue=${this.queue.length}`);
   }
 
   shuffle() {
@@ -2400,12 +2654,17 @@ export class GuildPlayer {
 
   toggleAutoplay() {
     this.autoplay = !this.autoplay;
+    console.log(`[AUTOPLAY_TOGGLE:${this.guildId}] Autoplay toggled to ${this.autoplay} | queue=${this.queue.length} | autoplayPreparePromise=${Boolean(this.autoplayPreparePromise)} | current=${this.current ? truncate(this.current.title, 80) : 'null'}`);
+
     if (
       this.autoplay &&
       this.queue.length === 0 &&
       !this.autoplayPreparePromise
     ) {
+      console.log(`[AUTOPLAY_TOGGLE:${this.guildId}] Queue empty, triggering prepareAutoplayTrack`);
       void this.prepareAutoplayTrack();
+    } else {
+      console.log(`[AUTOPLAY_TOGGLE:${this.guildId}] Skipping autoplay prep: queueNotEmpty=${this.queue.length > 0} hasPromise=${Boolean(this.autoplayPreparePromise)}`);
     }
     void this.publishNowPlaying("update");
     return this.autoplay;
