@@ -165,12 +165,13 @@ export class GuildPlayer {
 
     this.player.on(AudioPlayerStatus.Playing, async () => {
       this.skipTransitionActive = false;
+      this.stopRequested = false;
       this.playbackStartedAt = Date.now();
       console.log(`[PLAYING:${this.guildId}] Playing event fired | current=${
         this.current ? truncate(this.current.title, 80) : 'null'
       } | metricsLogged=${
         this.currentMetrics?.logged
-      } | queue=${this.queue.length} | autoplay=${this.autoplay}`);
+      } | queue=${this.queue.length} | autoplay=${this.autoplay} | stopReqReset`);
       if (this.currentMetrics?.logged || !this.current) {
         return;
       }
