@@ -46,6 +46,8 @@ function helpEmbed() {
     .setDescription(
       [
         '`/play <query>` putar lagu atau playlist',
+        '`/offlinemode <query>` putar semua cache yang cocok tanpa YouTube',
+        '`/normalmode` paksa kembali ke mode normal',
         '`/skip` lewati lagu sekarang',
         '`/stop` stop dan disconnect',
         '`/seek <seconds>` lompat ke posisi tertentu',
@@ -153,19 +155,61 @@ async function resolveMember(interaction) {
   return interaction.guild.members.fetch(interaction.user.id);
 }
 
-function statusEmbed(player) {
+function formatDiscordTimestamp(timestamp, style = 'R') {
+  return timestamp ? `<t:${Math.floor(timestamp / 1000)}:${style}>` : 'Belum pernah';
+}
+
+function youtubeErrorKindLabel(kind) {
+  switch (kind) {
+    case 'service_unavailable':
+      return 'Akses layanan / cookies / PO token';
+    case 'track_unavailable':
+      return 'Pembatasan lagu';
+    case 'unknown':
+      return 'Tidak diketahui';
+    default:
+      return 'Tidak ada';
+  }
+}
+
+async function statusEmbed(player) {
   const status = player.status();
+  const cacheStats = await player.audioCache.getStats().catch(() => null);
   const lines = [
     `Connected: \`${status.connected}\``,
     `Paused: \`${status.paused}\``,
     `Loop: \`${status.loopMode}\``,
     `Autoplay: \`${status.autoplay}\``,
     `Queue size: \`${status.queueSize}\``,
-    `YouTube: \`${status.youtubeStatus}\``
+    `Playback mode: \`${status.offlineMode ? 'offline-cache-only' : 'normal'}\``,
+    `YouTube: \`${status.youtubeStatus}\``,
+    `Kategori error terakhir: \`${youtubeErrorKindLabel(status.youtubeLastFailureKind)}\``,
+    `Probe terakhir: ${formatDiscordTimestamp(status.youtubeLastCheckedAt)}`,
   ];
 
-  if (status.youtubeFailureReason) {
-    lines.push(`YouTube reason: ${truncate(status.youtubeFailureReason, 120)}`);
+  if (status.youtubeLastFailureAt) {
+    lines.push(`Error terakhir: ${formatDiscordTimestamp(status.youtubeLastFailureAt)}`);
+  }
+
+  if (status.offlineMode) {
+    lines.push(`Filter offline: \`${truncate(status.offlineModeQuery, 80)}\``);
+    lines.push(`Sesi offline dimulai: ${formatDiscordTimestamp(status.offlineModeStartedAt)}`);
+  }
+
+  if (status.youtubeStatus === 'down') {
+    lines.push(`Probe pemulihan berikutnya: ${formatDiscordTimestamp(status.youtubeNextProbeAt)}`);
+  }
+
+  if (status.youtubeLastFailureReason) {
+    lines.push(`Alasan error terakhir: ${truncate(status.youtubeLastFailureReason, 120)}`);
+  }
+
+  if (cacheStats) {
+    lines.push(
+      `Cache: \`${cacheStats.totalTracks}/${cacheStats.maxTracks} lagu\` | \`${formatBytes(cacheStats.totalBytes)}/${formatBytes(cacheStats.maxBytes)}\``
+    );
+  } else {
+    lines.push('Cache: `statistik tidak tersedia`');
   }
 
   if (status.current) {
@@ -176,7 +220,8 @@ function statusEmbed(player) {
     lines.push(`Sleep until: <t:${Math.floor(status.sleepUntil / 1000)}:R>`);
   }
 
-  return new EmbedBuilder().setColor(0x2ecc71).setTitle('Player Status').setDescription(lines.join('\n'));
+  const color = status.youtubeStatus === 'down' ? 0xe67e22 : status.youtubeStatus === 'up' ? 0x2ecc71 : 0x95a5a6;
+  return new EmbedBuilder().setColor(color).setTitle('Player Status').setDescription(lines.join('\n'));
 }
 
 function scheduleInteractionDelete(interaction, delayMs = AUTO_DELETE_MS) {
@@ -363,6 +408,31 @@ client.on('interactionCreate', async (interaction) => {
           }, 5000);
           break;
         }
+        case 'offlinemode': {
+          await interaction.deferReply();
+          const query = interaction.options.getString('query', true);
+          const result = await player.enableOfflineMode({
+            member: await resolveMember(interaction),
+            textChannel: interaction.channel,
+            query
+          });
+          await interaction.editReply({
+            content: `Mode offline aktif. Memuat ${result.tracks.length} lagu cache untuk **${truncate(query, 100)}**.`
+          });
+          setTimeout(() => interaction.deleteReply().catch(() => null), AUTO_DELETE_MS);
+          break;
+        }
+        case 'normalmode': {
+          const changed = player.setNormalMode('force-normal-command');
+          await interaction.reply({
+            content: changed
+              ? 'Mode normal aktif kembali. Lagu lokal yang sedang berjalan tetap dilanjutkan.'
+              : 'Player sudah berada di mode normal.',
+            flags: MessageFlags.Ephemeral
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
         case 'skip':
           await interaction.reply({
             content: (await player.skip()) ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.',
@@ -408,7 +478,7 @@ client.on('interactionCreate', async (interaction) => {
           scheduleInteractionDelete(interaction);
           break;
         case 'status':
-          await interaction.reply({ embeds: [statusEmbed(player)], flags: MessageFlags.Ephemeral });
+          await interaction.reply({ embeds: [await statusEmbed(player)], flags: MessageFlags.Ephemeral });
           break;
         case 'lyrics': {
           await interaction.deferReply();

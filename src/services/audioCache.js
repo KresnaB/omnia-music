@@ -340,6 +340,26 @@ export class AudioCacheService {
     return cloneTrackFromEntry(partial, overrides);
   }
 
+  async resolveQueryToTracks(query, overrides = {}, { limit = 100 } = {}) {
+    await this.init();
+    const matches = this.searchEntries(query, {
+      limit: Math.max(1, limit),
+      maxScore: 0.4
+    }).map((result) => result.entry);
+
+    if (matches.length === 0) {
+      return [];
+    }
+
+    const now = Date.now();
+    for (const entry of matches) {
+      entry.lastAccessedAt = now;
+    }
+    await this.persistIndex();
+
+    return matches.map((entry) => cloneTrackFromEntry(entry, overrides));
+  }
+
   async getBestMatchTrack({ query = '', excludeCanonicalKeys = [], minScore = 25, requester, originalQuery = 'Cache Fallback' } = {}) {
     await this.init();
     const maxScore = Math.max(0.05, Math.min(0.4, 1 - (minScore / 100)));

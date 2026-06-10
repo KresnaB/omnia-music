@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { config } from '../config.js';
 import { truncate } from '../utils/format.js';
+import { createYoutubeError } from './youtubeErrors.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -308,16 +309,16 @@ function buildFastTrack(url) {
 }
 
 export class YTDlpService {
-  async resolve(query) {
+  async resolve(query, { bypassCache = false } = {}) {
     const normalizedQuery = normalizeQuery(query);
     console.log(`[YTDLP:resolve] Resolving query | original="${truncate(query, 100)}" | normalized="${truncate(normalizedQuery, 100)}"`);
 
-    const cached = getCache(normalizedQuery);
+    const cached = bypassCache ? null : getCache(normalizedQuery);
     if (cached) {
       console.log(`[YTDLP:resolve] Cache hit | type=${cached.type} | tracks=${cached.tracks?.length || 0}`);
       return cached;
     }
-    console.log(`[YTDLP:resolve] Cache miss, will resolve`);
+    console.log(`[YTDLP:resolve] ${bypassCache ? 'Cache bypassed' : 'Cache miss'}, will resolve`);
 
     const isPlaylist = isUrl(normalizedQuery) && (/[?&]list=/.test(normalizedQuery) || /\/playlist\?/.test(normalizedQuery) || /[?&]start_radio=/.test(normalizedQuery));
     const target = isUrl(normalizedQuery) ? normalizedQuery : `ytsearch1:${normalizedQuery}`;
@@ -390,8 +391,7 @@ export class YTDlpService {
       setCache(normalizedQuery, resultPayload);
       return resultPayload;
     } catch (error) {
-      const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
-      throw new Error(`yt-dlp resolve failed: ${detail.slice(0, 1000)}`);
+      throw createYoutubeError(error, 'resolve');
     }
   }
 
@@ -439,7 +439,7 @@ export class YTDlpService {
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       console.error(`[YTDLP:hydrate] Failed: ${detail.slice(0, 500)}`);
-      throw new Error(`yt-dlp hydrate failed: ${detail.slice(0, 1000)}`);
+      throw createYoutubeError(error, 'hydrate');
     }
   }
 
@@ -464,7 +464,7 @@ export class YTDlpService {
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       console.error(`[YTDLP:ensureStream] Failed: ${detail.slice(0, 500)}`);
-      throw new Error(`yt-dlp stream failed: ${detail.slice(0, 1000)}`);
+      throw createYoutubeError(error, 'stream');
     }
   }
 
@@ -507,7 +507,7 @@ export class YTDlpService {
     } catch (error) {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       console.error(`[YTDLP:hydrateMeta] Failed: ${detail.slice(0, 500)}`);
-      throw new Error(`yt-dlp metadata failed: ${detail.slice(0, 1000)}`);
+      throw createYoutubeError(error, 'metadata');
     }
   }
 }

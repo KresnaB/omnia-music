@@ -20,6 +20,12 @@ import {
 } from "discord.js";
 import { config } from "../config.js";
 import {
+  createYoutubeServiceError,
+  getYoutubeErrorKind,
+  isYoutubeServiceUnavailableError,
+  isYoutubeTrackUnavailableError,
+} from "../services/youtubeErrors.js";
+import {
   formatDuration,
   isTransientNetworkError,
   nowUnixPlus,
@@ -28,13 +34,6 @@ import {
 
 function isUrl(value) {
   return /^https?:\/\//i.test(String(value || "").trim());
-}
-
-function isYoutubeAvailabilityError(error) {
-  const message = String(error?.message || "").toLowerCase();
-  return /youtube|yt-dlp|cookie|cookies|403|401|forbidden|sign in|login|premiere|player response|mweb|pot|extractor|stream failed|hydrate failed|metadata failed/.test(
-    message,
-  );
 }
 
 function needsAutoplaySeedHydration(track) {
@@ -149,8 +148,17 @@ export class GuildPlayer {
     this.pausedForVoiceReconnect = false;
     this.youtubeStatus = "unknown";
     this.youtubeFailureReason = null;
+    this.youtubeFailureKind = null;
+    this.youtubeLastFailureReason = null;
+    this.youtubeLastFailureKind = null;
     this.youtubeProbePromise = null;
+    this.youtubeProbeTimer = null;
     this.youtubeLastCheckedAt = 0;
+    this.youtubeLastFailureAt = 0;
+    this.youtubeNextProbeAt = null;
+    this.offlineMode = false;
+    this.offlineModeQuery = null;
+    this.offlineModeStartedAt = null;
     this.nowPlayingUpdatePromise = Promise.resolve();
     this.pipelineCompletionTimer = null;
     this.playbackStartedAt = null;
@@ -283,14 +291,30 @@ export class GuildPlayer {
       }
 
       this.consecutiveErrors++;
-      const isNetwork = isTransientNetworkError(error);
-      const errorMessage = isNetwork
-        ? "⚠️ Gangguan jaringan terdeteksi. Mencoba lagi..."
-        : `Playback error: ${error.message}. Mencoba lagu berikutnya...`;
+      const youtubeErrorKind = getYoutubeErrorKind(error);
+      const isServiceError =
+        isYoutubeServiceUnavailableError(error) ||
+        isTransientNetworkError(error);
+      const isTrackUnavailable = isYoutubeTrackUnavailableError(error);
+      if (isServiceError) {
+        this.setYoutubeUnavailable(error);
+      } else if (isTrackUnavailable) {
+        this.setYoutubeHealthy();
+        this.consecutiveErrors = 0;
+      }
+      const errorMessage = isServiceError
+        ? "Gangguan akses YouTube terdeteksi. Beralih ke cache lokal..."
+        : isTrackUnavailable
+          ? "Lagu ini tidak tersedia atau dibatasi oleh YouTube. Melewati..."
+          : `Playback error: ${error.message}. Mencoba lagu berikutnya...`;
+
+      console.log(
+        `[PLAYER_ERROR:${this.guildId}] youtubeErrorKind=${youtubeErrorKind} | serviceError=${isServiceError}`,
+      );
 
       if (this.consecutiveErrors < 3) {
         await this.sendStatusMessage(errorMessage);
-        void this.queuePlayNext(isNetwork ? "network-retry" : "error");
+        void this.queuePlayNext(isServiceError ? "youtube-failover" : "error");
       } else {
         this.skipTransitionActive = false;
         await this.sendStatusMessage(
@@ -312,17 +336,95 @@ export class GuildPlayer {
       sleepUntil: this.sleepUntil,
       youtubeStatus: this.youtubeStatus,
       youtubeFailureReason: this.youtubeFailureReason,
+      youtubeFailureKind: this.youtubeFailureKind,
+      youtubeLastFailureReason: this.youtubeLastFailureReason,
+      youtubeLastFailureKind: this.youtubeLastFailureKind,
+      youtubeLastCheckedAt: this.youtubeLastCheckedAt,
+      youtubeLastFailureAt: this.youtubeLastFailureAt,
+      youtubeNextProbeAt: this.youtubeNextProbeAt,
+      offlineMode: this.offlineMode,
+      offlineModeQuery: this.offlineModeQuery,
+      offlineModeStartedAt: this.offlineModeStartedAt,
     };
+  }
+
+  setNormalMode(reason = "manual") {
+    const wasOffline = this.offlineMode;
+    this.offlineMode = false;
+    this.offlineModeQuery = null;
+    this.offlineModeStartedAt = null;
+    if (wasOffline) {
+      console.log(`[MODE:${this.guildId}] Offline mode disabled | reason=${reason}`);
+      void this.publishNowPlaying("mode-update");
+    }
+    return wasOffline;
+  }
+
+  async enableOfflineMode({ member, textChannel, query }) {
+    const voiceChannel = member.voice.channel;
+    if (!voiceChannel) {
+      throw new Error("Kamu harus berada di voice channel terlebih dahulu");
+    }
+
+    const requester = { id: member.id, name: member.displayName };
+    const requestStartedAt = Date.now();
+    const tracks = await this.audioCache.resolveQueryToTracks(
+      query,
+      {
+        requester,
+        addedAt: requestStartedAt,
+        originalQuery: `Offline: ${query}`,
+        requestStartedAt,
+        offlineModeTrack: true,
+      },
+      { limit: config.maxPlaylistTracks },
+    );
+
+    if (tracks.length === 0) {
+      throw new Error(
+        `Cache lokal tidak menemukan lagu atau artis untuk "${truncate(query, 120)}".`,
+      );
+    }
+
+    this.lastTextChannelId = textChannel.id;
+    await this.ensureVoice(voiceChannel);
+    await this.stop({ disconnect: false, resetPlaybackMode: false });
+
+    this.offlineMode = true;
+    this.offlineModeQuery = query;
+    this.offlineModeStartedAt = Date.now();
+    this.stopRequested = false;
+    this.insertUserTracks(tracks);
+    void this.publishNowPlaying("offline-mode");
+    void this.queuePlayNext("offline-mode");
+
+    return { type: "offline", tracks };
   }
 
   setYoutubeHealthy() {
     this.youtubeStatus = "up";
     this.youtubeFailureReason = null;
+    this.youtubeFailureKind = null;
+    this.youtubeNextProbeAt = null;
+    clearTimeout(this.youtubeProbeTimer);
+    this.youtubeProbeTimer = null;
   }
 
-  setYoutubeUnavailable(reason) {
+  setYoutubeUnavailable(error) {
+    const reason = error?.message || String(error || "");
     this.youtubeStatus = "down";
     this.youtubeFailureReason = reason || "YouTube sedang bermasalah";
+    this.youtubeFailureKind = getYoutubeErrorKind(error);
+    this.youtubeLastFailureReason = this.youtubeFailureReason;
+    this.youtubeLastFailureKind = this.youtubeFailureKind;
+    this.youtubeLastFailureAt = Date.now();
+    this.youtubeNextProbeAt = Date.now() + YOUTUBE_PROBE_COOLDOWN_MS;
+    clearTimeout(this.youtubeProbeTimer);
+    this.youtubeProbeTimer = setTimeout(() => {
+      this.youtubeProbeTimer = null;
+      void this.scheduleYoutubeAvailabilityProbe({ force: true });
+    }, YOUTUBE_PROBE_COOLDOWN_MS);
+    this.youtubeProbeTimer.unref?.();
   }
 
   waitForPlaybackStart(timeoutMs = 5_000) {
@@ -353,12 +455,15 @@ export class GuildPlayer {
     });
   }
 
-  scheduleYoutubeAvailabilityProbe({ waitForPlaybackStart = false } = {}) {
+  scheduleYoutubeAvailabilityProbe({ waitForPlaybackStart = false, force = false } = {}) {
+    if (this.offlineMode) {
+      return Promise.resolve();
+    }
     if (this.youtubeProbePromise) {
       return this.youtubeProbePromise;
     }
 
-    if (Date.now() - this.youtubeLastCheckedAt < YOUTUBE_PROBE_COOLDOWN_MS) {
+    if (!force && Date.now() - this.youtubeLastCheckedAt < YOUTUBE_PROBE_COOLDOWN_MS) {
       return Promise.resolve();
     }
 
@@ -368,11 +473,13 @@ export class GuildPlayer {
           await this.waitForPlaybackStart().catch(() => null);
         }
 
-        await this.ytdlp.resolve("ytsearch1:music");
+        await this.ytdlp.resolve("music", { bypassCache: true });
         this.setYoutubeHealthy();
       } catch (error) {
-        if (isYoutubeAvailabilityError(error)) {
-          this.setYoutubeUnavailable(error.message);
+        if (isYoutubeServiceUnavailableError(error)) {
+          this.setYoutubeUnavailable(error);
+        } else if (isYoutubeTrackUnavailableError(error)) {
+          this.setYoutubeHealthy();
         } else {
           console.warn(
             `[player:${this.guildId}] youtube probe failed:`,
@@ -392,6 +499,10 @@ export class GuildPlayer {
   }
 
   getYoutubeStatusLabel() {
+    if (this.offlineMode) {
+      return "Tidak digunakan (offline cache-only)";
+    }
+
     if (this.youtubeStatus === "down") {
       return `Error, failover ke cache${this.youtubeFailureReason ? `: ${truncate(this.youtubeFailureReason, 120)}` : ""}`;
     }
@@ -617,6 +728,7 @@ export class GuildPlayer {
     requester,
     originalQuery = "Cache Fallback",
     preferredQuery = "",
+    allowRandom = false,
   } = {}) {
     const excludeCanonicalKeys = new Set([
       this.current?.canonicalKey,
@@ -633,6 +745,10 @@ export class GuildPlayer {
 
     if (bestMatch) {
       return bestMatch;
+    }
+
+    if (!allowRandom) {
+      return null;
     }
 
     return this.audioCache.getAutoplayCandidate({
@@ -678,7 +794,7 @@ export class GuildPlayer {
           void this.preloadUpcomingTracks();
         }
 
-        if (isFirstPlay) {
+        if (isFirstPlay && !this.offlineMode) {
           void this.scheduleYoutubeAvailabilityProbe({
             waitForPlaybackStart: true,
           });
@@ -687,12 +803,19 @@ export class GuildPlayer {
         return {
           type: "single",
           fromCache: true,
+          offlineMode: this.offlineMode,
           isFirstPlay,
           tracks: [localTrack],
         };
       }
 
       console.log(`[ENQUEUE:${this.guildId}] Not found in local cache | youtubeStatus=${this.youtubeStatus}`);
+
+      if (this.offlineMode) {
+        throw new Error(
+          `Mode offline aktif dan cache lokal tidak menemukan "${truncate(query, 120)}".`,
+        );
+      }
 
       if (this.youtubeStatus === "down") {
         console.log(`[ENQUEUE:${this.guildId}] YouTube is down, trying cache failover`);
@@ -726,6 +849,9 @@ export class GuildPlayer {
       }
     } else {
       console.log(`[ENQUEUE:${this.guildId}] Query is a URL`);
+      if (this.offlineMode) {
+        throw new Error("Mode offline aktif. URL YouTube tidak dapat digunakan.");
+      }
     }
 
     this.youtubeStatus = "unknown";
@@ -743,16 +869,26 @@ export class GuildPlayer {
       this.setYoutubeHealthy();
     } catch (error) {
       console.error(`[ENQUEUE:${this.guildId}] Resolve failed: ${error.message}`);
-      const isYoutubeError = isYoutubeAvailabilityError(error);
-      console.log(`[ENQUEUE:${this.guildId}] Error analysis | isYoutubeError=${isYoutubeError}`);
+      const youtubeErrorKind = getYoutubeErrorKind(error);
+      const isServiceError = isYoutubeServiceUnavailableError(error);
+      const isTrackUnavailable = isYoutubeTrackUnavailableError(error);
+      console.log(`[ENQUEUE:${this.guildId}] Error analysis | youtubeErrorKind=${youtubeErrorKind}`);
 
-      if (!isYoutubeError) {
+      if (isTrackUnavailable) {
+        this.setYoutubeHealthy();
+        throw new Error(
+          `Lagu tidak tersedia atau dibatasi oleh YouTube: ${truncate(error.message || "unknown error", 250)}`,
+          { cause: error },
+        );
+      }
+
+      if (!isServiceError) {
         console.log(`[ENQUEUE:${this.guildId}] Non-YouTube error, throwing`);
         throw error;
       }
 
       console.log(`[ENQUEUE:${this.guildId}] YouTube error, trying cache failover`);
-      this.setYoutubeUnavailable(error.message);
+      this.setYoutubeUnavailable(error);
       const fallbackTrack = await this.buildCacheFallbackTrack({
         requester,
         originalQuery: `Cache failover untuk: ${query}`,
@@ -1019,6 +1155,7 @@ export class GuildPlayer {
     if (!channel?.isVoiceBased?.()) {
       this.voiceReconnectAttempts = 0;
       this.pausedForVoiceReconnect = false;
+      this.setNormalMode("voice-channel-unavailable");
       await this.sendStatusMessage(
         "Voice channel tidak ditemukan untuk reconnect otomatis.",
       );
@@ -1049,6 +1186,7 @@ export class GuildPlayer {
       }
 
       this.pausedForVoiceReconnect = false;
+      this.setNormalMode("voice-reconnect-failed");
       await this.sendStatusMessage(
         `Reconnect voice otomatis gagal setelah ${attempt} percobaan: ${truncate(error.message || "unknown error", 300)}. Gunakan /reconnect atau /play lagi.`,
       );
@@ -1392,9 +1530,15 @@ export class GuildPlayer {
 
     console.log(`[PREPARE:${this.guildId}] Not in cache, need stream URL`);
 
+    if (this.offlineMode) {
+      throw new Error(
+        `Mode offline aktif dan "${truncate(track.title, 80)}" tidak tersedia di cache lokal.`,
+      );
+    }
+
     if (this.youtubeStatus === "down") {
       console.error(`[PREPARE:${this.guildId}] YouTube is down, throwing`);
-      throw new Error(
+      throw createYoutubeServiceError(
         "YouTube sedang error, playback dibatasi ke lagu cache lokal.",
       );
     }
@@ -1473,6 +1617,7 @@ export class GuildPlayer {
             requester: { id: "autoplay", name: "Autoplay Cache" },
             originalQuery,
             preferredQuery: `${seed.title || ""} ${seed.uploader || ""}`.trim(),
+            allowRandom: true,
           });
 
           if (cached && this.autoplaySeedId === seedKey) {
@@ -1488,7 +1633,7 @@ export class GuildPlayer {
           return Boolean(cached);
         };
 
-        if (this.youtubeStatus === "down") {
+        if (this.offlineMode || this.youtubeStatus === "down") {
           console.log(`[AUTOPLAY:${this.guildId}] YouTube is down, trying cache`);
           await enqueueCacheAutoplay("Cache Autoplay");
           return;
@@ -1578,20 +1723,28 @@ export class GuildPlayer {
         }
       } catch (error) {
         console.error(`[AUTOPLAY:${this.guildId}] autoplay prepare error:`, error.message);
+        const isServiceError =
+          isYoutubeServiceUnavailableError(error) ||
+          isTransientNetworkError(error);
+        const isTrackUnavailable = isYoutubeTrackUnavailableError(error);
         const canFailoverToCache =
-          isYoutubeAvailabilityError(error) ||
-          isTransientNetworkError(error) ||
-          this.youtubeStatus === "down";
+          !isTrackUnavailable &&
+          (isServiceError || this.youtubeStatus === "down");
 
-        console.log(`[AUTOPLAY:${this.guildId}] Error analysis | canFailoverToCache=${canFailoverToCache} | isYoutubeError=${isYoutubeAvailabilityError(error)} | isNetworkError=${isTransientNetworkError(error)} | youtubeStatus=${this.youtubeStatus}`);
+        console.log(`[AUTOPLAY:${this.guildId}] Error analysis | canFailoverToCache=${canFailoverToCache} | youtubeErrorKind=${getYoutubeErrorKind(error)} | isNetworkError=${isTransientNetworkError(error)} | youtubeStatus=${this.youtubeStatus}`);
+
+        if (isTrackUnavailable) {
+          this.setYoutubeHealthy();
+        }
 
         if (canFailoverToCache) {
-          this.setYoutubeUnavailable(error.message);
+          this.setYoutubeUnavailable(error);
           console.log(`[AUTOPLAY:${this.guildId}] Trying cache failover after error`);
           const enqueued = await this.buildCacheFallbackTrack({
             requester: { id: "autoplay", name: "Autoplay Cache" },
             originalQuery: `Cache failover autoplay: ${seed.title || "Unknown"}`,
             preferredQuery: `${seed.title || ""} ${seed.uploader || ""}`.trim(),
+            allowRandom: true,
           });
 
           if (enqueued && this.autoplaySeedId === seedKey) {
@@ -1682,6 +1835,7 @@ export class GuildPlayer {
 
     if (!next) {
       console.log(`[PLAYNEXT:${this.guildId}] No next track, publishing idle message`);
+      this.setNormalMode("queue-finished");
       this.skipTransitionActive = false;
       await this.publishIdleMessage();
       this.resetIdleTimer();
@@ -1782,8 +1936,25 @@ export class GuildPlayer {
       }
     } catch (error) {
       console.error(`[PLAYNEXT:${this.guildId}] playNext failed for "${truncate(next?.title || 'unknown', 80)}":`, error.message);
-      console.log(`[PLAYNEXT:${this.guildId}] Error details | consecutiveErrors=${this.consecutiveErrors} | isYoutubeError=${isYoutubeAvailabilityError(error)} | isNetworkError=${isTransientNetworkError(error)}`);
-      if (isYoutubeAvailabilityError(error) || isTransientNetworkError(error)) {
+      const youtubeErrorKind = getYoutubeErrorKind(error);
+      const isTrackUnavailable = isYoutubeTrackUnavailableError(error);
+      const isServiceError =
+        isYoutubeServiceUnavailableError(error) ||
+        isTransientNetworkError(error);
+      console.log(`[PLAYNEXT:${this.guildId}] Error details | consecutiveErrors=${this.consecutiveErrors} | youtubeErrorKind=${youtubeErrorKind} | isNetworkError=${isTransientNetworkError(error)}`);
+
+      if (isTrackUnavailable) {
+        this.setYoutubeHealthy();
+        this.consecutiveErrors = 0;
+        this.current = null;
+        await this.sendStatusMessage(
+          `Lagu "${next.title}" tidak tersedia, dihapus, atau dibatasi oleh YouTube. Melewati lagu ini...`,
+        );
+        void this.queuePlayNext("track-unavailable");
+        return;
+      }
+
+      if (isServiceError) {
         const isNetwork = isTransientNetworkError(error);
         if (isNetwork) {
           await this.sendStatusMessage(
@@ -1791,7 +1962,7 @@ export class GuildPlayer {
           );
         }
 
-        this.setYoutubeUnavailable(error.message);
+        this.setYoutubeUnavailable(error);
         const fallbackTrack = await this.buildCacheFallbackTrack({
           requester: next.requester || {
             id: "autoplay",
@@ -1800,6 +1971,7 @@ export class GuildPlayer {
           originalQuery: `Cache failover untuk: ${next.title}`,
           preferredQuery:
             `${next.title || ""} ${next.uploader || ""} ${next.originalQuery || ""}`.trim(),
+          allowRandom: next.requester?.id === "autoplay",
         });
 
         if (fallbackTrack) {
@@ -2008,6 +2180,7 @@ export class GuildPlayer {
     });
 
     let stderr = "";
+    let sourceStderr = "";
     let probeReady = false;
     process.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
@@ -2018,6 +2191,9 @@ export class GuildPlayer {
       sourceProcess.stdout.on("error", () => null);
       process.stdin.on("error", () => null);
     }
+    sourceProcess?.stderr?.on("data", (chunk) => {
+      sourceStderr += chunk.toString();
+    });
 
     const startupFailure = new Promise((_, reject) => {
       process.once("error", (error) => {
@@ -2027,17 +2203,39 @@ export class GuildPlayer {
         if (probeReady) {
           return;
         }
+        const combinedStderr = [sourceStderr.trim(), stderr.trim()]
+          .filter(Boolean)
+          .join(" | ");
         reject(
           new Error(
-            code && stderr.trim()
-              ? `ffmpeg exited with code ${code}: ${truncate(stderr.trim(), 500)}`
+            code && combinedStderr
+              ? `audio pipeline exited with code ${code}: ${truncate(combinedStderr, 700)}`
               : "ffmpeg berhenti sebelum stream audio siap",
           ),
         );
       });
     });
 
-    const probe = Promise.race([demuxProbe(process.stdout), startupFailure]);
+    const sourceFailure = sourceProcess
+      ? new Promise((_, reject) => {
+          sourceProcess.once("error", (error) => {
+            reject(new Error(`yt-dlp pipe spawn failed: ${error.message}`));
+          });
+          sourceProcess.once("close", (code) => {
+            if (!probeReady && code !== 0) {
+              reject(
+                new Error(
+                  `yt-dlp pipe exited with code ${code}${sourceStderr.trim() ? `: ${truncate(sourceStderr.trim(), 700)}` : ""}`,
+                ),
+              );
+            }
+          });
+        })
+      : null;
+
+    const probe = Promise.race(
+      [demuxProbe(process.stdout), startupFailure, sourceFailure].filter(Boolean),
+    );
 
     return {
       process,
@@ -2235,6 +2433,7 @@ export class GuildPlayer {
           `👤 **Uploader:** ${truncate(this.current.uploader || "Unknown", 50)}`,
           `⏱️ **Duration:** \`${formatDuration(this.current.duration)}\``,
           `💾 **Source:** \`${this.current.localPath ? "local-cache" : "stream"}\``,
+          `🎚️ **Mode:** \`${status.offlineMode ? "offline-cache-only" : "normal"}\``,
           `📦 **Cache:** ${this.getTrackCacheStatusLabel(this.current)}`,
           "",
           `YouTube: ${this.getYoutubeStatusLabel()}`,
@@ -2532,7 +2731,7 @@ export class GuildPlayer {
     return true;
   }
 
-  async stop({ disconnect = false } = {}) {
+  async stop({ disconnect = false, resetPlaybackMode = true } = {}) {
     console.log(`[STOP:${this.guildId}] stop() called | disconnect=${disconnect} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length} | autoplay=${this.autoplay} | stopRequested=${this.stopRequested}`);
 
     this.clearPipelineCompletionTimer();
@@ -2554,6 +2753,9 @@ export class GuildPlayer {
     this.voiceReconnectAttempts = 0;
     this.voiceDisconnectNotified = false;
     this.pausedForVoiceReconnect = false;
+    if (resetPlaybackMode) {
+      this.setNormalMode(disconnect ? "disconnect" : "stop");
+    }
     this.clearEmptyChannelTimeout();
     clearTimeout(this.sleepTimeout);
     this.sleepUntil = null;

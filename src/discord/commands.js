@@ -4,6 +4,11 @@ export const commands = [
   new SlashCommandBuilder().setName('play').setDescription('Putar lagu atau playlist').addStringOption((option) =>
     option.setName('query').setDescription('Judul lagu, URL video, atau playlist URL').setRequired(true)
   ),
+  new SlashCommandBuilder().setName('offlinemode').setDescription('Mulai sesi playback hanya dari cache lokal')
+    .addStringOption((option) =>
+      option.setName('query').setDescription('Nama lagu atau artis di cache lokal').setRequired(true)
+    ),
+  new SlashCommandBuilder().setName('normalmode').setDescription('Paksa kembali ke mode playback normal'),
   new SlashCommandBuilder().setName('skip').setDescription('Lewati lagu saat ini'),
   new SlashCommandBuilder().setName('stop').setDescription('Hentikan playback'),
   new SlashCommandBuilder().setName('seek').setDescription('Pindah posisi playback').addIntegerOption((option) =>
