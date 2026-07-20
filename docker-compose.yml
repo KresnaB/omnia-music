@@ -1,19 +1,15 @@
 services:
   omnia-music:
-    build: .
+    image: ghcr.io/kresnab/omnia-music:latest
     container_name: omnia-music
     restart: unless-stopped
     ports:
       - "3002:3000"
+    env_file:
+      - .env
     volumes:
       - /home/kresna/omnia-music/storage/audio-cache:/music:ro
       - omnia-data:/app/data
-    environment:
-      - PORT=3000
-      - DB_PATH=/app/data/omnia.db
-      - AUDIO_PATH=/music
-      - INDEX_PATH=/music/index.json
-      - JWT_SECRET=omnia-secret-2026
 
 volumes:
   omnia-data:
