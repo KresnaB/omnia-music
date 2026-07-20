@@ -70,20 +70,79 @@ function createSearchDocument(entry) {
 }
 
 function cloneTrackMeta(track) {
+  const uploader = track.uploader || 'Unknown';
+  const title = track.title || 'Unknown title';
+  
   return {
     id: track.id || null,
-    title: track.title || 'Unknown title',
+    title: title,
     url: track.url || track.webpageUrl || null,
     webpageUrl: track.webpageUrl || track.url || null,
     duration: Number(track.duration || 0),
-    uploader: track.uploader || 'Unknown',
+    uploader: uploader,
     thumbnail: track.thumbnail || null,
     source: track.source || 'youtube',
-    canonicalKey: track.canonicalKey || canonicalizeTitle(track.title),
+    canonicalKey: track.canonicalKey || canonicalizeTitle(title),
     cacheFormat: 'ogg',
     cacheCodec: 'opus',
-    cacheBitrateKbps: config.audioCacheBitrateKbps
+    cacheBitrateKbps: config.audioCacheBitrateKbps,
+    album: track.album || extractAlbum(title, uploader) || uploader,
+    normalizedArtist: track.normalizedArtist || uploader
   };
+}
+
+const LABEL_PATTERNS = [
+  'musica studios', 'sony music', 'trinity optima', 'hits records',
+  'nagaswara', 'emotion entertainment', 'gp records', '1thek',
+  '20th century', 'warner records', 'universal music', 'atlantic records',
+  'republic records', 'interscope', 'columbia records', 'rca records',
+  'def jam', 'capitol records', 'virgin records', 'parlophone',
+  'official video', 'official channel', 'records', 'entertainment',
+  'production', 'music channel', 'vevo',
+  '7clouds', '1106 radio', 'as tone', 'no copyrightsounds',
+  'aquarius musikindo', 'nagaswara official', 'aini musik',
+  'musik proaktif', 'indolirik', 'latin hype', 'sonymusicidvevo',
+  'dan music', '510 music',
+];
+
+function isLabel(uploader) {
+  const lower = (uploader || '').toLowerCase();
+  return LABEL_PATTERNS.some(label => lower.includes(label));
+}
+
+function extractAlbum(title, uploader) {
+  // If uploader is not a label, use it as album
+  if (!isLabel(uploader)) {
+    return uploader;
+  }
+  
+  // Try "Artist - Song" pattern
+  const dashIdx = title.indexOf(' - ');
+  if (dashIdx > 0 && dashIdx < 50) {
+    const artist = title.substring(0, dashIdx).trim();
+    if (artist.length > 1 && artist.length < 60) {
+      return artist;
+    }
+  }
+  
+  // Try "[Artist] Song" pattern
+  if (title.startsWith('[')) {
+    const endIdx = title.indexOf(']');
+    if (endIdx > 0 && endIdx < 50) {
+      return title.substring(1, endIdx).trim();
+    }
+  }
+  
+  // Try "Song by Artist" pattern
+  const byIdx = title.toLowerCase().lastIndexOf(' by ');
+  if (byIdx > 0) {
+    const artist = title.substring(byIdx + 4).trim();
+    if (artist.length > 1 && artist.length < 60) {
+      return artist;
+    }
+  }
+  
+  return uploader;
 }
 
 function cloneTrackFromEntry(entry, overrides = {}) {

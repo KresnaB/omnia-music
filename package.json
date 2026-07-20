@@ -15,6 +15,7 @@
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
     "@snazzah/davey": "^0.1.11",
+    "@solidjs/router": "^0.16.1",
     "discord.js": "^14.26.2",
     "dotenv": "^16.5.0",
     "fuse.js": "^7.3.0"

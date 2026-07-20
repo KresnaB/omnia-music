@@ -1,5 +1,10 @@
-.git
-.env
-config
-bin
 node_modules
+web/node_modules
+web/dist
+server/server
+*.db
+.env
+.git
+.hermes
+storage/audio-cache
+data

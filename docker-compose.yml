@@ -1,20 +1,20 @@
 services:
   omnia-music:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: omnia-music
     restart: unless-stopped
-    env_file:
-      - .env
+    ports:
+      - "3002:3000"
     volumes:
-      - ./config:/app/config
-      - ./storage:/app/storage
-    depends_on:
-      - bgutil-pot
+      - /home/kresna/omnia-music/storage/audio-cache:/music:ro
+      - omnia-data:/app/data
+    environment:
+      - PORT=3000
+      - DB_PATH=/app/data/omnia.db
+      - AUDIO_PATH=/music
+      - INDEX_PATH=/music/index.json
+      - JWT_SECRET=omnia-secret-2026
 
-  bgutil-pot:
-    image: ghcr.io/jim60105/bgutil-pot:latest
-    container_name: bgutil-pot
-    restart: unless-stopped
-    command: ["server", "--host", "0.0.0.0", "--port", "4416"]
+volumes:
+  omnia-data:
+    driver: local

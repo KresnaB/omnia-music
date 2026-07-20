@@ -4,3 +4,9 @@ bin/
 omnia-music
 node_modules/
 storage/
+cookies.txt
+data/
+.hermes/
+server/server
+web/dist/
+*.bak
