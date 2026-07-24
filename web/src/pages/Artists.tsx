@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, For, Show } from 'solid-js';
+import { Component, createSignal, createEffect, onMount, For, Show } from 'solid-js';
 import { useSearchParams, useNavigate } from '@solidjs/router';
 import { api } from '../api/client';
 import { playTrackFromList, Track } from '../stores/player';
@@ -27,13 +27,22 @@ const Artists: Component = () => {
       ]);
       setArtists(artistData);
       setGenres(genreData);
-
-      const artistParam = searchParams.artist;
-      if (artistParam && typeof artistParam === 'string') {
-        loadArtistDetail(artistParam, false);
-      }
     } catch {}
     setLoading(false);
+  });
+
+  // React to URL changes (browser back/forward)
+  createEffect(() => {
+    const artistParam = searchParams.artist;
+    if (artistParam && typeof artistParam === 'string') {
+      if (selectedArtist() !== artistParam) {
+        loadArtistDetail(artistParam, false);
+      }
+    } else if (selectedArtist()) {
+      setSelectedArtist('');
+      setTracks([]);
+      setAlbums([]);
+    }
   });
 
   async function loadArtistDetail(artist: string, pushUrl = true) {
@@ -127,7 +136,7 @@ const Artists: Component = () => {
             <div>
               {/* Artist header */}
               <div class="artist-header">
-                <button class="btn-back" onClick={() => { setSelectedArtist(''); setTracks([]); setAlbums([]); navigate('/artists'); }}>
+                <button class="btn-back" onClick={() => navigate('/artists', { replace: true })}>
                   <span class="material-symbols-outlined" style="vertical-align:middle;">arrow_back</span> Kembali
                 </button>
                 <h2>{selectedArtist()}</h2>
