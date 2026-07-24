@@ -1,12 +1,12 @@
-import { Component, createSignal, onMount, For, Show } from 'solid-js';
+import { Component, createSignal, onMount, onCleanup, For, Show } from 'solid-js';
 import { A, useNavigate } from '@solidjs/router';
 import { api } from '../api/client';
 import { playTrackFromList, Track } from '../stores/player';
 import { user } from '../stores/auth';
-import TrackMenu from '../components/TrackMenu';
+import TrackList from '../components/TrackList';
 
 const Home: Component = () => {
-  const [recentlyPlayed, setRecentlyPlayed] = createSignal<any[]>([]);
+  const [recentlyPlayed, setRecentlyPlayed] = createSignal<Track[]>([]);
   const [topArtists, setTopArtists] = createSignal<any[]>([]);
   const [topGenres, setTopGenres] = createSignal<any[]>([]);
   const [forYou, setForYou] = createSignal<Track[]>([]);
@@ -15,21 +15,6 @@ const Home: Component = () => {
   const [playlists, setPlaylists] = createSignal<any[]>([]);
   const [loading, setLoading] = createSignal(true);
   const navigate = useNavigate();
-
-  // Menu state
-  const [menuTrack, setMenuTrack] = createSignal<Track | null>(null);
-  const [menuPos, setMenuPos] = createSignal({ x: 0, y: 0 });
-
-  const openMenu = (e: MouseEvent, track: Track) => {
-    e.stopPropagation();
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = Math.min(rect.right - 200, window.innerWidth - 220);
-    const y = rect.bottom + 4;
-    setMenuPos({ x, y });
-    setMenuTrack(track);
-  };
-
-  const closeMenu = () => setMenuTrack(null);
 
   const load = async () => {
     setLoading(true);
@@ -59,12 +44,21 @@ const Home: Component = () => {
   // Auto-refresh home every 5 minutes
   const refreshInterval = setInterval(load, 5 * 60 * 1000);
 
+  const handleHistoryUpdated = () => {
+    load();
+  };
+
   // Listen for custom refresh event from player (when new track is played)
   if (typeof window !== 'undefined') {
-    window.addEventListener('omnia:history-updated', () => {
-      load();
-    });
+    window.addEventListener('omnia:history-updated', handleHistoryUpdated);
   }
+
+  onCleanup(() => {
+    clearInterval(refreshInterval);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('omnia:history-updated', handleHistoryUpdated);
+    }
+  });
 
   const playIndo = () => { if (topIndo().length) playTrackFromList(topIndo()[0], topIndo()); };
   const playGlobal = () => { if (topGlobal().length) playTrackFromList(topGlobal()[0], topGlobal()); };
@@ -89,20 +83,7 @@ const Home: Component = () => {
                 <span class="material-symbols-outlined icon-filled">play_arrow</span> Putar
               </button>
             </div>
-            <div class="horizontal-scroll">
-              <For each={recentlyPlayed().slice(0, 20)}>
-                {(track) => (
-                  <div class="track-card-h" onClick={() => playTrackFromList(track, recentlyPlayed())}>
-                    <img class="track-card-thumb-h" src={track.thumbnail} alt="" loading="lazy" />
-                    <div class="track-card-title-h">{track.title}</div>
-                    <div class="track-card-artist-h">{track.normalized_artist || track.artist}</div>
-                    <button class="track-card-menu-btn" onClick={(e) => openMenu(e, track)} title="Opsi lainnya">
-                      <span class="material-symbols-outlined">more_vert</span>
-                    </button>
-                  </div>
-                )}
-              </For>
-            </div>
+            <TrackList tracks={recentlyPlayed().slice(0, 20)} queueTracks={recentlyPlayed()} />
           </section>
         </Show>
 
@@ -115,23 +96,7 @@ const Home: Component = () => {
                 <span class="material-symbols-outlined icon-filled">play_arrow</span> Putar
               </button>
             </div>
-            <div class="track-grid">
-              <For each={forYou().slice(0, 20)}>
-                {(track, i) => (
-                  <div class="track-card" onClick={() => playTrackFromList(track, forYou())}>
-                    <div class="track-card-rank">{i() + 1}</div>
-                    <img class="track-card-thumb" src={track.thumbnail} alt="" loading="lazy" />
-                    <div class="track-card-info">
-                      <div class="track-card-title">{track.title}</div>
-                      <div class="track-card-artist">{track.normalized_artist || track.artist}</div>
-                    </div>
-                    <button class="track-card-menu-btn" onClick={(e) => openMenu(e, track)} title="Opsi lainnya">
-                      <span class="material-symbols-outlined">more_vert</span>
-                    </button>
-                  </div>
-                )}
-              </For>
-            </div>
+            <TrackList tracks={forYou().slice(0, 20)} queueTracks={forYou()} />
           </section>
         </Show>
 
@@ -185,23 +150,7 @@ const Home: Component = () => {
               <span class="material-symbols-outlined icon-filled">play_arrow</span> Putar
             </button>
           </div>
-          <div class="track-grid">
-            <For each={topIndo().slice(0, 20)}>
-              {(track, i) => (
-                <div class="track-card" onClick={() => playTrackFromList(track, topIndo())}>
-                  <div class="track-card-rank">{i() + 1}</div>
-                  <img class="track-card-thumb" src={track.thumbnail} alt="" loading="lazy" />
-                  <div class="track-card-info">
-                    <div class="track-card-title">{track.title}</div>
-                    <div class="track-card-artist">{track.normalized_artist || track.artist}</div>
-                  </div>
-                  <button class="track-card-menu-btn" onClick={(e) => openMenu(e, track)} title="Opsi lainnya">
-                    <span class="material-symbols-outlined">more_vert</span>
-                  </button>
-                </div>
-              )}
-            </For>
-          </div>
+          <TrackList tracks={topIndo().slice(0, 20)} queueTracks={topIndo()} />
         </section>
 
         {/* Top 100 Global */}
@@ -212,34 +161,9 @@ const Home: Component = () => {
               <span class="material-symbols-outlined icon-filled">play_arrow</span> Putar
             </button>
           </div>
-          <div class="track-grid">
-            <For each={topGlobal().slice(0, 20)}>
-              {(track, i) => (
-                <div class="track-card" onClick={() => playTrackFromList(track, topGlobal())}>
-                  <div class="track-card-rank">{i() + 1}</div>
-                  <img class="track-card-thumb" src={track.thumbnail} alt="" loading="lazy" />
-                  <div class="track-card-info">
-                    <div class="track-card-title">{track.title}</div>
-                    <div class="track-card-artist">{track.normalized_artist || track.artist}</div>
-                  </div>
-                  <button class="track-card-menu-btn" onClick={(e) => openMenu(e, track)} title="Opsi lainnya">
-                    <span class="material-symbols-outlined">more_vert</span>
-                  </button>
-                </div>
-              )}
-            </For>
-          </div>
+          <TrackList tracks={topGlobal().slice(0, 20)} queueTracks={topGlobal()} />
         </section>
 
-      </Show>
-
-      <Show when={menuTrack()}>
-        <TrackMenu
-          track={menuTrack()!}
-          x={menuPos().x}
-          y={menuPos().y}
-          onClose={closeMenu}
-        />
       </Show>
     </div>
   );

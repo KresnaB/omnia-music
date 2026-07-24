@@ -92,6 +92,7 @@ const Playlists: Component = () => {
                 <span class="material-symbols-outlined playlist-icon icon-filled" style="color:var(--accent);">library_music</span>
                 <div class="playlist-name">{pl.name}</div>
                 <div class="playlist-desc">{pl.description || 'Tanpa deskripsi'}</div>
+                <div class="playlist-track-count" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px;">{pl.track_count || 0} lagu</div>
               </A>
               <button class="btn-delete" onClick={() => deletePlaylist(pl.id)}>
                 <span class="material-symbols-outlined" style="font-size:1.1rem;">delete</span>

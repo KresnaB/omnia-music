@@ -2,12 +2,11 @@ import { Component, Show, For, createSignal, onMount, onCleanup } from 'solid-js
 import {
   current, queue, isPlaying, currentTime, duration, volume, isMuted,
   loopMode, shuffle, autoplay, crossfade, showLyrics,
-  lyrics, lyricsLoading, syncedLyrics,
+  lyrics, lyricsLoading, syncedLyrics, fetchLyrics,
   togglePlay, seek, changeVolume, toggleMute, nextTrack, prevTrack,
   cycleLoopMode, toggleShuffle, toggleAutoplay, toggleCrossfade,
   removeFromQueue, playTrack,
 } from '../stores/player';
-import { api } from '../api/client';
 import type { Track } from '../stores/player';
 import TrackMenu from './TrackMenu';
 
@@ -30,8 +29,6 @@ interface Props {
 
 const DesktopFullscreenPlayer: Component<Props> = (props) => {
   const [activeTab, setActiveTab] = createSignal<'upnext' | 'lyrics'>('upnext');
-  const [localLyrics, setLocalLyrics] = createSignal<string | null>(null);
-  const [localLyricsLoading, setLocalLyricsLoading] = createSignal(false);
   const [menuTrack, setMenuTrack] = createSignal<Track | null>(null);
   const [menuPos, setMenuPos] = createSignal({ x: 0, y: 0 });
 
@@ -45,24 +42,15 @@ const DesktopFullscreenPlayer: Component<Props> = (props) => {
 
   const upNextTracks = () => queue().slice(0, 30);
 
-  const fetchLyrics = async () => {
+  const loadLyricsIfNeeded = () => {
     const cur = current();
-    if (!cur) return;
-    setLocalLyricsLoading(true);
-    setLocalLyrics(null);
-    try {
-      const data = await api.getLyrics(cur.id);
-      setLocalLyrics(data.lyrics);
-    } catch {
-      setLocalLyrics(null);
-    }
-    setLocalLyricsLoading(false);
+    if (cur) fetchLyrics(cur.id);
   };
 
   const handleTabClick = (tab: 'upnext' | 'lyrics') => {
     setActiveTab(tab);
-    if (tab === 'lyrics' && !localLyrics() && !localLyricsLoading()) {
-      fetchLyrics();
+    if (tab === 'lyrics' && !lyrics() && !lyricsLoading()) {
+      loadLyricsIfNeeded();
     }
   };
 
@@ -74,7 +62,7 @@ const DesktopFullscreenPlayer: Component<Props> = (props) => {
     if (id !== prevTrackId) {
       prevTrackId = id;
       if (activeTab() === 'lyrics') {
-        fetchLyrics();
+        loadLyricsIfNeeded();
       }
     }
   };
@@ -258,7 +246,7 @@ const DesktopFullscreenPlayer: Component<Props> = (props) => {
             <Show when={activeTab() === 'lyrics'}>
               <div class="fullscreen-lyrics">
                 <Show
-                  when={!localLyricsLoading()}
+                  when={!lyricsLoading()}
                   fallback={
                     <div class="fullscreen-lyrics-loading">
                       <span class="material-symbols-outlined" style="font-size:2rem;animation:spin 1s linear infinite;">autorenew</span>
@@ -267,12 +255,12 @@ const DesktopFullscreenPlayer: Component<Props> = (props) => {
                   }
                 >
                   <Show
-                    when={localLyrics()}
+                    when={lyrics()}
                     fallback={
                       <div class="fullscreen-lyrics-empty">
                         <span class="material-symbols-outlined" style="font-size:3rem;opacity:0.3;">music_off</span>
                         <div style="margin-top:12px;">Lirik tidak ditemukan</div>
-                        <button class="fullscreen-lyrics-retry" onClick={fetchLyrics}>
+                        <button class="fullscreen-lyrics-retry" onClick={loadLyricsIfNeeded}>
                           <span class="material-symbols-outlined">refresh</span>
                           Coba Lagi
                         </button>
@@ -280,7 +268,7 @@ const DesktopFullscreenPlayer: Component<Props> = (props) => {
                     }
                   >
                     <div class="fullscreen-lyrics-text">
-                      <For each={localLyrics()!.split('\n')}>
+                      <For each={lyrics()!.split('\n')}>
                         {(line) => (
                           <div class="fullscreen-lyrics-line">{line || <br />}</div>
                         )}

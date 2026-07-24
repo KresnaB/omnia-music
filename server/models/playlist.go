@@ -12,6 +12,7 @@ type Playlist struct {
 	Description string         `json:"description"`
 	CreatedAt   string         `json:"created_at"`
 	UpdatedAt   string         `json:"updated_at"`
+	TrackCount  int            `json:"track_count"`
 	Tracks      []PlaylistTrack `json:"tracks,omitempty"`
 }
 
@@ -38,7 +39,9 @@ func CreatePlaylist(userID int, name, description string) (*Playlist, error) {
 
 func GetPlaylistsByUser(userID int) ([]Playlist, error) {
 	rows, err := database.DB.Query(
-		"SELECT id, user_id, name, description, created_at, updated_at FROM playlists WHERE user_id = ? ORDER BY updated_at DESC",
+		`SELECT p.id, p.user_id, p.name, p.description, p.created_at, p.updated_at,
+		        COALESCE((SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id), 0) AS track_count
+		 FROM playlists p WHERE p.user_id = ? ORDER BY p.updated_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -49,7 +52,7 @@ func GetPlaylistsByUser(userID int) ([]Playlist, error) {
 	playlists := []Playlist{}
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt, &p.TrackCount); err != nil {
 			continue
 		}
 		playlists = append(playlists, p)

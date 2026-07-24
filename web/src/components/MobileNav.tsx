@@ -33,6 +33,10 @@ const MobileNav: Component = () => {
           <span class="material-symbols-outlined">library_music</span>
           <span class="mobile-nav-label">Playlist</span>
         </A>
+        <A href="/history" class="mobile-nav-item" classList={{ active: isActive('/history') }}>
+          <span class="material-symbols-outlined">history</span>
+          <span class="mobile-nav-label">Riwayat</span>
+        </A>
       </Show>
     </nav>
   );

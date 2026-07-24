@@ -159,4 +159,7 @@ export const api = {
 
   deleteHistoryEntry: (id: number) =>
     request<any>(`/history/${id}`, { method: 'DELETE' }),
+
+  deleteHistory: (id: number) =>
+    request<any>(`/history/${id}`, { method: 'DELETE' }),
 };

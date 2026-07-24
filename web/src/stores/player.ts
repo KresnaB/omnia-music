@@ -9,6 +9,7 @@ export interface Track {
   normalized_artist?: string;
   genre?: string;
   is_cover?: boolean;
+  album?: string;
   thumbnail: string;
   duration: number;
 }
@@ -19,7 +20,9 @@ const [history, setHistory] = createSignal<Track[]>([]);
 const [isPlaying, setIsPlaying] = createSignal(false);
 const [currentTime, setCurrentTime] = createSignal(0);
 const [duration, setDuration] = createSignal(0);
-const [volume, setVolume] = createSignal(0.8);
+const savedVolume = typeof localStorage !== 'undefined' ? localStorage.getItem('omnia_volume') : null;
+const initialVolume = savedVolume !== null ? parseFloat(savedVolume) : 0.8;
+const [volume, setVolume] = createSignal(isNaN(initialVolume) ? 0.8 : initialVolume);
 const [isMuted, setIsMuted] = createSignal(false);
 const [loopMode, setLoopMode] = createSignal<'off' | 'one' | 'all'>('off');
 const [shuffle, setShuffle] = createSignal(false);
@@ -150,6 +153,9 @@ export function changeVolume(v: number) {
   setVolume(v);
   if (audioEl) audioEl.volume = v;
   if (v > 0) setIsMuted(false);
+  try {
+    localStorage.setItem('omnia_volume', v.toString());
+  } catch {}
 }
 
 export function toggleMute() {
@@ -214,7 +220,7 @@ export function toggleLyrics() {
   }
 }
 
-async function fetchLyrics(trackId: number) {
+export async function fetchLyrics(trackId: number) {
   setLyricsLoading(true);
   try {
     const data = await api.getLyrics(trackId);

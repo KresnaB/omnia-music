@@ -10,6 +10,7 @@ interface TrackMenuProps {
     title: string;
     artist: string;
     normalized_artist?: string;
+    album?: string;
     thumbnail: string;
     duration: number;
   };
@@ -29,11 +30,26 @@ const TrackMenu: Component<TrackMenuProps> = (props) => {
   const [loadingPlaylists, setLoadingPlaylists] = createSignal(false);
   const [addingTo, setAddingTo] = createSignal<number | null>(null);
   const [addedTo, setAddedTo] = createSignal<number | null>(null);
+  const [toastMsg, setToastMsg] = createSignal<string | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout>;
+
+  const showToast = (msg: string, done?: () => void) => {
+    setToastMsg(msg);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      setToastMsg(null);
+      if (done) done();
+    }, 1000);
+  };
+
+  onCleanup(() => {
+    clearTimeout(toastTimer);
+  });
 
   const handleAddToPlaylist = async () => {
     if (props.onAddToPlaylist) {
       props.onAddToPlaylist(props.track.id);
-      props.onClose();
+      showToast('Berhasil ditambahkan', () => props.onClose());
       return;
     }
     // Show playlist picker popup
@@ -53,12 +69,13 @@ const TrackMenu: Component<TrackMenuProps> = (props) => {
     try {
       await api.addTrackToPlaylist(playlistId, props.track.id);
       setAddedTo(playlistId);
-      setTimeout(() => {
+      showToast('Berhasil ditambahkan ke playlist', () => {
         setShowPlaylistPicker(false);
         props.onClose();
-      }, 800);
+      });
     } catch (err) {
       console.error('Failed to add to playlist:', err);
+      showToast('Gagal menambahkan ke playlist');
     }
     setAddingTo(null);
   };
@@ -72,7 +89,9 @@ const TrackMenu: Component<TrackMenuProps> = (props) => {
 
   const handlePlayNext = () => {
     addToQueue(props.track as any);
-    props.onClose();
+    showToast('Ditambahkan ke antrean', () => {
+      props.onClose();
+    });
   };
 
   const isInQueue = () => queue().some(t => t.id === props.track.id);
@@ -88,6 +107,9 @@ const TrackMenu: Component<TrackMenuProps> = (props) => {
   };
 
   const handleGoToAlbum = () => {
+    if (props.track.album) {
+      navigate('/albums/' + encodeURIComponent(props.track.album));
+    }
     props.onClose();
   };
 
@@ -100,6 +122,12 @@ const TrackMenu: Component<TrackMenuProps> = (props) => {
         style={{ left: `${props.x}px`, top: `${props.y}px` }}
         onClick={(e) => e.stopPropagation()}
       >
+        <Show when={toastMsg()}>
+          <div style="position: absolute; inset: 0; background: rgba(0, 0, 0, 0.88); display: flex; align-items: center; justify-content: center; border-radius: 8px; z-index: 10; color: #fff; font-size: 0.85rem; font-weight: 500; text-align: center; padding: 12px; gap: 8px;">
+            <span class="material-symbols-outlined" style="color: #4caf50;">check_circle</span>
+            <span>{toastMsg()}</span>
+          </div>
+        </Show>
         <Show when={!showPlaylistPicker()}>
           <button class="track-menu-item" onClick={handleAddToPlaylist}>
             <span class="material-symbols-outlined track-menu-icon">playlist_add</span>
@@ -125,10 +153,12 @@ const TrackMenu: Component<TrackMenuProps> = (props) => {
             <span class="material-symbols-outlined track-menu-icon">person</span>
             Ke Artis
           </button>
-          <button class="track-menu-item" onClick={handleGoToAlbum}>
-            <span class="material-symbols-outlined track-menu-icon">album</span>
-            Ke Album
-          </button>
+          <Show when={props.track.album}>
+            <button class="track-menu-item" onClick={handleGoToAlbum}>
+              <span class="material-symbols-outlined track-menu-icon">album</span>
+              Ke Album
+            </button>
+          </Show>
         </Show>
 
         {/* Playlist picker sub-popup */}

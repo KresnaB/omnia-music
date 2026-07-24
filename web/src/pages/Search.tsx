@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show } from 'solid-js';
+import { Component, createSignal, createEffect, For, Show, onCleanup } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import { api } from '../api/client';
 import TrackList from '../components/TrackList';
@@ -53,6 +53,10 @@ const Search: Component = () => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => doSearch(value), 300);
   };
+
+  onCleanup(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+  });
 
   const tabs: { key: Tab; label: string; count: number }[] = [];
 

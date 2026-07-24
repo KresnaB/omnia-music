@@ -14,12 +14,9 @@ const Artists: Component = () => {
   const [selectedArtist, setSelectedArtist] = createSignal('');
   const [tracks, setTracks] = createSignal<any[]>([]);
   const [albums, setAlbums] = createSignal<any[]>([]);
-  const [playlists, setPlaylists] = createSignal<any[]>([]);
-  const [similarArtists, setSimilarArtists] = createSignal<any[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [tracksLoading, setTracksLoading] = createSignal(false);
   const [albumsLoading, setAlbumsLoading] = createSignal(false);
-  const [similarLoading, setSimilarLoading] = createSignal(false);
   const [showAllTracks, setShowAllTracks] = createSignal(false);
 
   onMount(async () => {
@@ -44,8 +41,6 @@ const Artists: Component = () => {
     setShowAllTracks(false);
     setTracks([]);
     setAlbums([]);
-    setPlaylists([]);
-    setSimilarArtists([]);
 
     // Update URL so browser back works correctly
     if (pushUrl) {
@@ -54,7 +49,6 @@ const Artists: Component = () => {
 
     setTracksLoading(true);
     setAlbumsLoading(true);
-    setSimilarLoading(true);
 
     try {
       const data = await api.getTracks(1, 100, undefined, artist);
@@ -67,17 +61,6 @@ const Artists: Component = () => {
       setAlbums(albumData);
     } catch {}
     setAlbumsLoading(false);
-
-    try {
-      const similarData = await api.getSimilarArtists(artist);
-      setSimilarArtists(similarData);
-    } catch {}
-    setSimilarLoading(false);
-
-    try {
-      const plData = await api.getArtistPlaylists(artist);
-      setPlaylists(plData);
-    } catch {}
   }
 
   async function filterByGenre(genre: string) {
@@ -85,8 +68,6 @@ const Artists: Component = () => {
     setSelectedArtist('');
     setTracks([]);
     setAlbums([]);
-    setPlaylists([]);
-    setSimilarArtists([]);
     setLoading(true);
     try {
       const data = await api.getArtists(genre);
@@ -146,7 +127,7 @@ const Artists: Component = () => {
             <div>
               {/* Artist header */}
               <div class="artist-header">
-                <button class="btn-back" onClick={() => { setSelectedArtist(''); setTracks([]); setAlbums([]); setPlaylists([]); setSimilarArtists([]); navigate('/artists', { replace: true }); }}>
+                <button class="btn-back" onClick={() => { setSelectedArtist(''); setTracks([]); setAlbums([]); navigate('/artists', { replace: true }); }}>
                   <span class="material-symbols-outlined" style="vertical-align:middle;">arrow_back</span> Kembali
                 </button>
                 <h2>{selectedArtist()}</h2>
@@ -198,48 +179,6 @@ const Artists: Component = () => {
                             />
                             <div class="album-name">{album.name || album.album_name || 'Unknown Album'}</div>
                             <div class="album-artist">{album.artist}</div>
-                          </div>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
-                </Show>
-              </section>
-
-              {/* Playlists containing this artist */}
-              <section class="artist-section">
-                <div class="section-header">
-                  <h2>Playlist</h2>
-                </div>
-                <Show when={playlists().length > 0} fallback={<div class="empty-state">Tidak ada playlist</div>}>
-                  <div class="horizontal-scroll">
-                    <For each={playlists()}>
-                      {(pl) => (
-                        <div class="playlist-card-h" onClick={() => navigate(`/playlists/${pl.id}`)}>
-                          <span class="material-symbols-outlined playlist-icon-h icon-filled">library_music</span>
-                          <div class="playlist-name-h">{pl.name}</div>
-                          <div class="playlist-desc-h">{pl.track_count || 0} lagu</div>
-                        </div>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </section>
-
-              {/* Similar Artists */}
-              <section class="artist-section">
-                <div class="section-header">
-                  <h2>Artis Serupa</h2>
-                </div>
-                <Show when={!similarLoading()} fallback={<div class="loading">Memuat...</div>}>
-                  <Show when={similarArtists().length > 0} fallback={<div class="empty-state">Tidak ada artis serupa</div>}>
-                    <div class="horizontal-scroll">
-                      <For each={similarArtists()}>
-                        {(artist) => (
-                          <div class="artist-card-h" onClick={() => loadArtistDetail(artist.name)}>
-                            <img class="artist-thumb-h" src={artist.thumbnail} alt="" loading="lazy" />
-                            <div class="artist-name-h">{artist.name}</div>
-                            <div class="artist-count-h">{artist.count || ''}</div>
                           </div>
                         )}
                       </For>

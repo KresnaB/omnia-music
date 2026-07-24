@@ -86,7 +86,6 @@ const AlbumDetail: Component = () => {
             <h1 class="album-detail-title">{album()?.name || album()?.album_name || 'Unknown Album'}</h1>
             <p class="album-detail-artist">{album()?.artist}</p>
             <p class="album-detail-meta">
-              {album()?.year || ''}
               {album()?.track_count || tracks().length} lagu
             </p>
             <button class="btn-primary" style="width:auto;padding:10px 28px" onClick={playAll}>
