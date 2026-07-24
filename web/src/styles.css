@@ -1877,6 +1877,54 @@ html, body, #root {
     opacity: 1;
   }
 
+  /* Mobile inline lyrics */
+  .mobile-player-expanded-inner {
+    overflow: hidden;
+    height: 100%;
+  }
+
+  .mobile-lyrics-header {
+    text-align: center;
+    width: 100%;
+    padding: 8px 0;
+    flex-shrink: 0;
+  }
+
+  .mobile-lyrics-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-lyrics-artist {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  .mobile-lyrics-scroll {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+    padding: 16px 24px;
+    overscroll-behavior: contain;
+  }
+
+  .mobile-lyrics-text {
+    font-size: 1.05rem;
+    line-height: 2;
+    color: var(--text-secondary);
+    text-align: center;
+    padding-bottom: 24px;
+  }
+
+  .mobile-lyrics-line {
+    padding: 4px 0;
+  }
+
   /* Track menu: full width on mobile */
   .track-menu {
     left: 8px !important;

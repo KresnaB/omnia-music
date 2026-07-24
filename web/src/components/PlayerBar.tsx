@@ -1,7 +1,7 @@
-import { Component, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { Component, Show, For, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   current, isPlaying, currentTime, duration, volume, isMuted,
-  loopMode, shuffle, autoplay, crossfade, showLyrics,
+  loopMode, shuffle, autoplay, crossfade, showLyrics, lyrics, lyricsLoading,
   togglePlay, seek, changeVolume, toggleMute, nextTrack, prevTrack,
   cycleLoopMode, toggleShuffle, toggleAutoplay, toggleCrossfade, toggleLyrics,
 } from '../stores/player';
@@ -140,55 +140,92 @@ const PlayerBar: Component = () => {
             <button class="mobile-player-collapse" onClick={collapseMobile}>
               <span class="material-symbols-outlined">keyboard_arrow_down</span>
             </button>
-            <img class="mobile-player-expanded-thumb" src={current()!.thumbnail} alt="" />
-            <div class="mobile-player-expanded-info">
-              <div class="mobile-player-expanded-title">{current()!.title}</div>
-              <div class="mobile-player-expanded-artist">{current()!.normalized_artist || current()!.artist}</div>
-            </div>
-            <div class="mobile-player-expanded-seek">
-              <input
-                type="range"
-                class="seek-bar"
-                min="0"
-                max={duration() || 0}
-                value={currentTime()}
-                style={`--progress: ${seekProgress()}%`}
-                onInput={(e) => seek(parseFloat(e.currentTarget.value))}
-              />
-              <div class="mobile-player-expanded-times">
-                <span class="time-label">{formatTime(currentTime())}</span>
-                <span class="time-label">{formatTime(duration())}</span>
+            <Show
+              when={showLyrics()}
+              fallback={<>
+                <img class="mobile-player-expanded-thumb" src={current()!.thumbnail} alt="" />
+                <div class="mobile-player-expanded-info">
+                  <div class="mobile-player-expanded-title">{current()!.title}</div>
+                  <div class="mobile-player-expanded-artist">{current()!.normalized_artist || current()!.artist}</div>
+                </div>
+                <div class="mobile-player-expanded-seek">
+                  <input
+                    type="range"
+                    class="seek-bar"
+                    min="0"
+                    max={duration() || 0}
+                    value={currentTime()}
+                    style={`--progress: ${seekProgress()}%`}
+                    onInput={(e) => seek(parseFloat(e.currentTarget.value))}
+                  />
+                  <div class="mobile-player-expanded-times">
+                    <span class="time-label">{formatTime(currentTime())}</span>
+                    <span class="time-label">{formatTime(duration())}</span>
+                  </div>
+                </div>
+                <div class="mobile-player-expanded-controls">
+                  <button
+                    class="btn-player"
+                    onClick={toggleShuffle}
+                    classList={{ 'btn-active': shuffle() }}
+                  >
+                    <span class="material-symbols-outlined">shuffle</span>
+                  </button>
+                  <button class="btn-player" onClick={prevTrack}>
+                    <span class="material-symbols-outlined">skip_previous</span>
+                  </button>
+                  <button class="btn-player btn-play-mobile" onClick={togglePlay}>
+                    <span class="material-symbols-outlined icon-filled">
+                      {isPlaying() ? 'pause' : 'play_arrow'}
+                    </span>
+                  </button>
+                  <button class="btn-player" onClick={nextTrack}>
+                    <span class="material-symbols-outlined">skip_next</span>
+                  </button>
+                  <button
+                    class="btn-player"
+                    onClick={cycleLoopMode}
+                    classList={{ 'btn-active': loopMode() !== 'off' }}
+                  >
+                    <span class="material-symbols-outlined">
+                      {loopMode() === 'one' ? 'repeat_one' : 'repeat'}
+                    </span>
+                  </button>
+                </div>
+              </>}
+            >
+              {/* Inline lyrics for mobile */}
+              <div class="mobile-lyrics-header">
+                <div>
+                  <div class="mobile-lyrics-title">{current()!.title}</div>
+                  <div class="mobile-lyrics-artist">{current()!.normalized_artist || current()!.artist}</div>
+                </div>
               </div>
-            </div>
-            <div class="mobile-player-expanded-controls">
-              <button
-                class="btn-player"
-                onClick={toggleShuffle}
-                classList={{ 'btn-active': shuffle() }}
-              >
-                <span class="material-symbols-outlined">shuffle</span>
-              </button>
-              <button class="btn-player" onClick={prevTrack}>
-                <span class="material-symbols-outlined">skip_previous</span>
-              </button>
-              <button class="btn-player btn-play-mobile" onClick={togglePlay}>
-                <span class="material-symbols-outlined icon-filled">
-                  {isPlaying() ? 'pause' : 'play_arrow'}
-                </span>
-              </button>
-              <button class="btn-player" onClick={nextTrack}>
-                <span class="material-symbols-outlined">skip_next</span>
-              </button>
-              <button
-                class="btn-player"
-                onClick={cycleLoopMode}
-                classList={{ 'btn-active': loopMode() !== 'off' }}
-              >
-                <span class="material-symbols-outlined">
-                  {loopMode() === 'one' ? 'repeat_one' : 'repeat'}
-                </span>
-              </button>
-            </div>
+              <div class="mobile-lyrics-scroll">
+                <Show
+                  when={!lyricsLoading()}
+                  fallback={<div class="lyrics-loading">Memuat lirik...</div>}
+                >
+                  <Show
+                    when={lyrics()}
+                    fallback={
+                      <div class="lyrics-empty">
+                        <span class="material-symbols-outlined" style="font-size:3rem;color:var(--text-muted);">music_off</span>
+                        <div style="margin-top:12px;">Lirik tidak ditemukan</div>
+                      </div>
+                    }
+                  >
+                    <div class="mobile-lyrics-text">
+                      <For each={lyrics()!.split('\n')}>
+                        {(line) => (
+                          <div class="mobile-lyrics-line">{line || <br />}</div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </Show>
+              </div>
+            </Show>
             <div class="mobile-player-expanded-extras">
               <button
                 class="btn-player"
