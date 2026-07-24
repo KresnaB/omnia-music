@@ -9,7 +9,7 @@ const Sidebar: Component = () => {
   return (
     <nav class="sidebar">
       <div class="sidebar-logo">
-        <span class="material-symbols-outlined icon-filled" style="color:var(--accent);font-size:1.8rem;">headphones</span>
+        <img src="/favicon-32x32.png" alt="Omnia" style="width:28px;height:28px;border-radius:4px;" />
         <span>Omnia Music</span>
       </div>
 
