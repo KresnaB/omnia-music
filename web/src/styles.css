@@ -1615,7 +1615,10 @@ html, body, #root {
     padding: 0;
     gap: 0;
     height: var(--player-h);
-    position: relative;
+    position: fixed;
+    bottom: var(--mobile-nav-h);
+    left: 0;
+    right: 0;
     z-index: 90;
   }
 
@@ -1677,6 +1680,7 @@ html, body, #root {
     width: 100%;
     grid-column: 1 / -1;
     grid-row: 1;
+    background: var(--bg-secondary);
   }
 
   .player-mobile-compact-left {

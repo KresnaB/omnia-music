@@ -278,7 +278,7 @@ const PlayerBar: Component = () => {
 
           {/* Mobile: compact inline player */}
           <div class="player-mobile-compact">
-            <div class="player-mobile-compact-left" onClick={() => setDesktopExpanded(true)}>
+            <div class="player-mobile-compact-left" onClick={() => setExpanded(true)}>
               <img class="player-mobile-thumb" src={current()!.thumbnail} alt="" />
               <div class="player-mobile-text">
                 <div class="player-title">{current()!.title}</div>
