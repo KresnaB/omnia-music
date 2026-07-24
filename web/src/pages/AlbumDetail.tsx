@@ -5,11 +5,24 @@ import TrackList from '../components/TrackList';
 import Breadcrumbs from '../components/Breadcrumbs';
 import { Track, playTrackFromList } from '../stores/player';
 
+const formatDuration = (seconds: number): string => {
+  if (!seconds || seconds <= 0) return '';
+  const totalMins = Math.round(seconds / 60);
+  if (totalMins <= 0) return '1 menit';
+  const hours = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (hours > 0) {
+    return mins > 0 ? `${hours} jam ${mins} menit` : `${hours} jam`;
+  }
+  return `${mins} menit`;
+};
+
 const AlbumDetail: Component = () => {
   const params = useParams();
   const navigate = useNavigate();
   const location = useLocation<any>();
   const [album, setAlbum] = createSignal<any>(null);
+  const [albumTracks, setAlbumTracks] = createSignal<any[]>([]);
   const [loading, setLoading] = createSignal(true);
 
   const fromArtist = (): string | undefined => location.state?.fromArtist;
@@ -18,7 +31,8 @@ const AlbumDetail: Component = () => {
     try {
       const albumName = decodeURIComponent(params.name || '');
       const data = await api.getAlbum(albumName);
-      setAlbum(data);
+      setAlbum(data.album || data);
+      setAlbumTracks(data.tracks || []);
     } catch (err) {
       console.error('Failed to load album:', err);
       navigate('/albums');
@@ -28,21 +42,38 @@ const AlbumDetail: Component = () => {
 
   const tracks = (): Track[] => {
     const a = album();
-    if (!a?.tracks) return [];
-    return a.tracks.map((t: any) => ({
+    const list = albumTracks();
+    if (!list.length) return [];
+    return list.map((t: any) => ({
       id: t.id,
       track_id: t.track_id || '',
       title: t.title,
-      artist: t.artist || a.artist || 'Unknown',
-      thumbnail: t.thumbnail || a.thumbnail || '',
+      artist: t.artist || a?.artist || 'Unknown',
+      thumbnail: t.thumbnail || a?.thumbnail || '',
       duration: t.duration || 0,
-      normalized_artist: t.normalized_artist || t.artist || a.artist,
+      normalized_artist: t.normalized_artist || t.artist || a?.artist,
     }));
+  };
+
+  const totalDuration = (): number => {
+    const a = album();
+    if (a?.total_duration && a.total_duration > 0) {
+      return a.total_duration;
+    }
+    return albumTracks().reduce((acc: number, t: any) => acc + (t.duration || 0), 0);
   };
 
   const playAll = () => {
     const t = tracks();
     if (t.length > 0) playTrackFromList(t[0], t);
+  };
+
+  const playShuffle = () => {
+    const t = tracks();
+    if (t.length > 0) {
+      const shuffled = [...t].sort(() => Math.random() - 0.5);
+      playTrackFromList(shuffled[0], shuffled);
+    }
   };
 
   return (
@@ -86,11 +117,16 @@ const AlbumDetail: Component = () => {
             <h1 class="album-detail-title">{album()?.name || album()?.album_name || 'Unknown Album'}</h1>
             <p class="album-detail-artist">{album()?.artist}</p>
             <p class="album-detail-meta">
-              {album()?.track_count || tracks().length} lagu
+              {album()?.track_count || tracks().length} lagu{formatDuration(totalDuration()) ? ` · ${formatDuration(totalDuration())}` : ''}
             </p>
-            <button class="btn-primary" style="width:auto;padding:10px 28px" onClick={playAll}>
-              <span class="material-symbols-outlined icon-filled" style="font-size:1rem;vertical-align:middle;">play_arrow</span> Putar Semua
-            </button>
+            <div class="album-detail-actions">
+              <button class="btn-primary" style="width:auto;padding:10px 28px" onClick={playAll}>
+                <span class="material-symbols-outlined icon-filled" style="font-size:1rem;vertical-align:middle;">play_arrow</span> Putar Semua
+              </button>
+              <button class="btn-secondary" style="width:auto;padding:10px 28px" onClick={playShuffle}>
+                <span class="material-symbols-outlined" style="font-size:1rem;vertical-align:middle;">shuffle</span> Putar Acak
+              </button>
+            </div>
           </div>
         </div>
 

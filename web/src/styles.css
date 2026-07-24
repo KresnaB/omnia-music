@@ -2575,6 +2575,14 @@ html, body, #root {
   margin-bottom: 36px;
 }
 
+.album-detail-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
 /* ===== RESPONSIVE: Album grid ===== */
 @media (max-width: 768px) {
   .album-grid {
