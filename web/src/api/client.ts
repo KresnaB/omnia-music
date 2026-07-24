@@ -103,8 +103,8 @@ export const api = {
     ),
 
   // Albums
-  getAlbums: (limit = 200) =>
-    request<{ albums: any[] }>('/albums?limit=' + limit).then(r => r.albums || []),
+  getAlbums: (limit = 200, minTracks = 2) =>
+    request<{ albums: any[] }>(`/albums?limit=${limit}&min_tracks=${minTracks}`).then(r => r.albums || []),
 
   getAlbum: (name: string) => request<{ album: any; tracks: any[] }>(`/albums/${encodeURIComponent(name)}`),
 

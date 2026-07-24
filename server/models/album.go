@@ -12,7 +12,7 @@ type Album struct {
 	TotalDuration int    `json:"total_duration"`
 }
 
-func GetAlbums(limit, offset int) ([]Album, error) {
+func GetAlbums(limit, offset int, minTracks int) ([]Album, error) {
 	if limit < 1 {
 		limit = 50
 	}
@@ -21,8 +21,8 @@ func GetAlbums(limit, offset int) ([]Album, error) {
 	}
 
 	rows, err := database.DB.Query(
-		"SELECT album, artist, thumbnail, track_count, total_duration FROM albums ORDER BY album ASC LIMIT ? OFFSET ?",
-		limit, offset,
+		"SELECT album, artist, thumbnail, track_count, total_duration FROM albums WHERE track_count >= ? ORDER BY track_count DESC, album ASC LIMIT ? OFFSET ?",
+		minTracks, limit, offset,
 	)
 	if err != nil {
 		return nil, err

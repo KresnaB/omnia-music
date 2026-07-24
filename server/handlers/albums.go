@@ -12,6 +12,14 @@ import (
 func GetAlbums(c *fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
 	page, _ := strconv.Atoi(c.Query("page", "1"))
+	minTracksStr := c.Query("min_tracks", "2")
+	minTracks := 2
+	if minTracksStr == "all" || minTracksStr == "0" {
+		minTracks = 0
+	} else if v, err := strconv.Atoi(minTracksStr); err == nil && v >= 0 {
+		minTracks = v
+	}
+
 	if limit < 1 || limit > 5000 {
 		limit = 50
 	}
@@ -20,7 +28,7 @@ func GetAlbums(c *fiber.Ctx) error {
 	}
 	offset := (page - 1) * limit
 
-	albums, err := models.GetAlbums(limit, offset)
+	albums, err := models.GetAlbums(limit, offset, minTracks)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "database error"})
 	}

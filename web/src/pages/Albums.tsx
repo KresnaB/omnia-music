@@ -20,16 +20,28 @@ const Albums: Component = () => {
   const [albums, setAlbums] = createSignal<any[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [searchQuery, setSearchQuery] = createSignal('');
+  const [minTracks, setMinTracks] = createSignal(2);
 
-  onMount(async () => {
+  const fetchAlbums = async (min: number) => {
+    setLoading(true);
     try {
-      const data = await api.getAlbums();
+      const data = await api.getAlbums(200, min);
       setAlbums(data);
     } catch (err) {
       console.error('Failed to load albums:', err);
     }
     setLoading(false);
+  };
+
+  onMount(() => {
+    fetchAlbums(minTracks());
   });
+
+  const handleToggle = (min: number) => {
+    if (minTracks() === min) return;
+    setMinTracks(min);
+    fetchAlbums(min);
+  };
 
   const filteredAlbums = createMemo(() => {
     const q = searchQuery().toLowerCase().trim();
@@ -60,6 +72,23 @@ const Albums: Component = () => {
           value={searchQuery()}
           onInput={(e) => setSearchQuery(e.currentTarget.value)}
         />
+      </div>
+
+      <div class="genre-filter" style="margin-bottom: 1rem;">
+        <button
+          class="genre-chip"
+          classList={{ 'genre-chip-active': minTracks() === 2 }}
+          onClick={() => handleToggle(2)}
+        >
+          Album
+        </button>
+        <button
+          class="genre-chip"
+          classList={{ 'genre-chip-active': minTracks() === 0 }}
+          onClick={() => handleToggle(0)}
+        >
+          Semua
+        </button>
       </div>
 
       <Show when={!loading()} fallback={<div class="loading">Memuat...</div>}>
