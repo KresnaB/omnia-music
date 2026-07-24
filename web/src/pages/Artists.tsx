@@ -127,7 +127,7 @@ const Artists: Component = () => {
             <div>
               {/* Artist header */}
               <div class="artist-header">
-                <button class="btn-back" onClick={() => { setSelectedArtist(''); setTracks([]); setAlbums([]); navigate('/artists', { replace: true }); }}>
+                <button class="btn-back" onClick={() => { setSelectedArtist(''); setTracks([]); setAlbums([]); navigate('/artists'); }}>
                   <span class="material-symbols-outlined" style="vertical-align:middle;">arrow_back</span> Kembali
                 </button>
                 <h2>{selectedArtist()}</h2>

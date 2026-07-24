@@ -1,4 +1,4 @@
-import { Component, Show, createSignal, onCleanup } from 'solid-js';
+import { Component, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   current, isPlaying, currentTime, duration, volume, isMuted,
   loopMode, shuffle, autoplay, crossfade, showLyrics,
@@ -27,6 +27,59 @@ const PlayerBar: Component = () => {
   let volRef: HTMLInputElement | undefined;
   const [expanded, setExpanded] = createSignal(false);
   const [desktopExpanded, setDesktopExpanded] = createSignal(false);
+  let expandedPushed = false;
+  let desktopExpandedPushed = false;
+
+  // Listen for browser back button to close overlays
+  const handlePopState = () => {
+    if (expanded()) {
+      setExpanded(false);
+      expandedPushed = false;
+    } else if (desktopExpanded()) {
+      setDesktopExpanded(false);
+      desktopExpandedPushed = false;
+    }
+  };
+
+  onMount(() => {
+    window.addEventListener('popstate', handlePopState);
+  });
+
+  onCleanup(() => {
+    window.removeEventListener('popstate', handlePopState);
+  });
+
+  const expandMobile = () => {
+    setExpanded(true);
+    if (!expandedPushed) {
+      history.pushState({ player: 'mobile' }, '');
+      expandedPushed = true;
+    }
+  };
+
+  const collapseMobile = () => {
+    setExpanded(false);
+    if (expandedPushed) {
+      history.back();
+      expandedPushed = false;
+    }
+  };
+
+  const expandDesktop = () => {
+    setDesktopExpanded(true);
+    if (!desktopExpandedPushed) {
+      history.pushState({ player: 'desktop' }, '');
+      desktopExpandedPushed = true;
+    }
+  };
+
+  const collapseDesktop = () => {
+    setDesktopExpanded(false);
+    if (desktopExpandedPushed) {
+      history.back();
+      desktopExpandedPushed = false;
+    }
+  };
   const [menuOpen, setMenuOpen] = createSignal(false);
   const [menuPos, setMenuPos] = createSignal({ x: 0, y: 0 });
 
@@ -63,7 +116,7 @@ const PlayerBar: Component = () => {
     <>
       {/* Desktop fullscreen player */}
       <Show when={desktopExpanded() && current()}>
-        <DesktopFullscreenPlayer onClose={() => setDesktopExpanded(false)} />
+        <DesktopFullscreenPlayer onClose={collapseDesktop} />
       </Show>
 
       <Show when={showLyrics() && current()}>
@@ -82,9 +135,9 @@ const PlayerBar: Component = () => {
 
       {/* Mobile expanded player overlay */}
       <Show when={expanded() && current()}>
-        <div class="mobile-player-expanded" onClick={() => setExpanded(false)}>
+        <div class="mobile-player-expanded" onClick={collapseMobile}>
           <div class="mobile-player-expanded-inner" onClick={(e) => e.stopPropagation()}>
-            <button class="mobile-player-collapse" onClick={() => setExpanded(false)}>
+            <button class="mobile-player-collapse" onClick={collapseMobile}>
               <span class="material-symbols-outlined">keyboard_arrow_down</span>
             </button>
             <img class="mobile-player-expanded-thumb" src={current()!.thumbnail} alt="" />
@@ -176,7 +229,7 @@ const PlayerBar: Component = () => {
       <div class="player-bar" classList={{ 'player-bar-empty': !current() }}>
         <Show when={current()} fallback={<div />}>
           {/* Desktop: full layout */}
-          <div class="player-track-info player-track-info-clickable" onClick={() => setDesktopExpanded(true)}>
+          <div class="player-track-info player-track-info-clickable" onClick={expandDesktop}>
             <img class="player-thumb" src={current()!.thumbnail} alt="" />
             <div class="player-text">
               <div class="player-title">{current()!.title}</div>
@@ -278,7 +331,7 @@ const PlayerBar: Component = () => {
 
           {/* Mobile: compact inline player */}
           <div class="player-mobile-compact">
-            <div class="player-mobile-compact-left" onClick={() => setExpanded(true)}>
+            <div class="player-mobile-compact-left" onClick={expandMobile}>
               <img class="player-mobile-thumb" src={current()!.thumbnail} alt="" />
               <div class="player-mobile-text">
                 <div class="player-title">{current()!.title}</div>
