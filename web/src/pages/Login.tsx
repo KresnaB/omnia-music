@@ -70,7 +70,7 @@ const Login: Component = () => {
     <div class="login-page">
       <div class="login-card">
         <div class="login-logo">
-          <img src="/favicon-32x32.png" alt="Omnia" style="width:24px;height:24px;border-radius:4px;vertical-align:middle;" /> Omnia Music
+          <img src="/logo.png" alt="Omnia Music" style="width:80px;height:80px;border-radius:12px;" />
         </div>
         <h2>{isRegister() ? 'Daftar' : 'Masuk'}</h2>
         <form onSubmit={handleSubmit}>

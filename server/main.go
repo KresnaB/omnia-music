@@ -156,8 +156,22 @@ func main() {
 	webDir := "./web/dist"
 	if _, err := os.Stat(webDir); err == nil {
 		app.Static("/assets", filepath.Join(webDir, "assets"))
-		app.Static("/favicon.svg", filepath.Join(webDir, "favicon.svg"))
-		
+
+		// Static root-level files (favicon, logo, manifest, etc.)
+		staticFiles := []string{
+			"favicon.ico", "favicon-16x16.png", "favicon-32x32.png",
+			"apple-touch-icon.png", "android-chrome-192x192.png",
+			"android-chrome-512x512.png", "logo.png", "site.webmanifest",
+		}
+		for _, f := range staticFiles {
+			localPath := filepath.Join(webDir, f)
+			if _, err := os.Stat(localPath); err == nil {
+				app.Get("/"+f, func(c *fiber.Ctx) error {
+					return c.SendFile(localPath)
+				})
+			}
+		}
+
 		// SPA catch-all: serve index.html for all non-API, non-static routes
 		app.Get("/*", func(c *fiber.Ctx) error {
 			return c.SendFile(filepath.Join(webDir, "index.html"))

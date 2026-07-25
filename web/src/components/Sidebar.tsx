@@ -9,7 +9,7 @@ const Sidebar: Component = () => {
   return (
     <nav class="sidebar">
       <div class="sidebar-logo">
-        <img src="/favicon-32x32.png" alt="Omnia" style="width:28px;height:28px;border-radius:4px;" />
+        <img src="/logo.png" alt="Omnia" style="width:28px;height:28px;border-radius:6px;" />
         <span>Omnia Music</span>
       </div>
 
