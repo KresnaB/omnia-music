@@ -1,8 +1,16 @@
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import Fuse from 'fuse.js';
 import { config } from '../config.js';
+
+// Fetcher chunked: CDN googlevideo menolak Range >= ~1MB / full-file / tanpa
+// batas (403 anti-ripping). Skrip ini mengambil file dalam chunk parsial
+// 400KB yang disambung -> selalu diterima (206).
+const CHUNKED_FETCH_PATH = fileURLToPath(
+  new URL('../utils/chunked-fetch.mjs', import.meta.url),
+);
 
 const CANONICAL_NOISE_PATTERNS = [
   /\b(official|audio|video|lyrics?|lyric|visualizer|mv|hd|hq|4k|8k)\b/gi,
@@ -530,29 +538,16 @@ export class AudioCacheService {
   }
 
   async queueDownload(track) {
+    // Download cache DINONAKTIFKAN (Juli 2026+): CDN googlevideo menolak
+    // request Range >= ~1MB / full-file / tanpa batas dengan 403 (anti-ripping),
+    // jadi download track baru tidak bisa diandalkan.
+    // Yang tetap berfungsi:
+    //   - Play dari lokal jika track sudah ada di cache (hydrateLocalReference)
+    //   - Failover ke lagu lokal saat YouTube error (getBestMatchTrack)
     await this.init();
     const canonicalKey = track.canonicalKey || this.getCanonicalKey(track);
     track.canonicalKey = canonicalKey;
-
-    if (this.index.has(canonicalKey)) {
-      return this.index.get(canonicalKey);
-    }
-
-    if (this.downloads.has(canonicalKey)) {
-      return this.downloads.get(canonicalKey);
-    }
-
-    const promise = this.downloadTrack(track, canonicalKey)
-      .catch((error) => {
-        console.warn(`[audio-cache] download failed for "${track.title}":`, error.message);
-        return null;
-      })
-      .finally(() => {
-        this.downloads.delete(canonicalKey);
-      });
-
-    this.downloads.set(canonicalKey, promise);
-    return promise;
+    return this.index.has(canonicalKey) ? this.index.get(canonicalKey) : null;
   }
 
   async downloadTrack(track, canonicalKey) {
@@ -565,26 +560,24 @@ export class AudioCacheService {
     const tempName = `${baseName}.${Date.now()}.part.ogg`;
     const finalPath = path.join(config.audioCacheDir, finalName);
     const tempPath = path.join(config.audioCacheDir, tempName);
-    const headers = buildHttpHeaders(track);
+
+    // googlevideo menolak request Range >= ~1MB / full-file / tanpa batas
+    // (403 anti-ripping). Pakai chunked-fetch (curl parsial 400KB disambung)
+    // -> pipe ke ffmpeg (stdin), selalu diterima (206).
+    const chunkedFetch = spawn(process.execPath, [
+      CHUNKED_FETCH_PATH,
+      track.streamUrl,
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
 
     const ffmpegArgs = [
       '-nostdin',
       '-hide_banner',
       '-loglevel',
       'error',
-      '-reconnect',
-      '1',
-      '-reconnect_streamed',
-      '1',
-      '-reconnect_on_network_error',
-      '1',
-      '-reconnect_on_http_error',
-      '4xx,5xx',
-      '-reconnect_delay_max',
-      '5',
-      ...(headers ? ['-headers', headers] : []),
       '-i',
-      track.streamUrl,
+      'pipe:0',
       '-vn',
       '-sn',
       '-dn',
@@ -609,11 +602,15 @@ export class AudioCacheService {
     ];
 
     const ffmpegProcess = spawn(config.ffmpegPath, ffmpegArgs, {
-      stdio: ['ignore', 'ignore', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe']
     });
+    chunkedFetch.stdout.pipe(ffmpegProcess.stdin);
 
     try {
-      await waitForExit(ffmpegProcess, 'ffmpeg');
+      await Promise.all([
+        waitForExit(ffmpegProcess, 'ffmpeg'),
+        waitForExit(chunkedFetch, 'chunked-fetch')
+      ]);
 
       await rm(finalPath, { force: true }).catch(() => null);
       await rename(tempPath, finalPath);
@@ -638,6 +635,7 @@ export class AudioCacheService {
       return entry;
     } catch (error) {
       ffmpegProcess.kill('SIGKILL');
+      chunkedFetch.kill('SIGKILL');
       await rm(tempPath, { force: true }).catch(() => null);
       throw error;
     }

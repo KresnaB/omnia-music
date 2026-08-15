@@ -42,7 +42,15 @@ function parseJsonBlob(output) {
 
 async function runYtDlpJson(args) {
   try {
-    return await execFileAsync(config.ytDlpPath, args, { maxBuffer: 16 * 1024 * 1024 });
+    const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, {
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    // Jalur sukses (exit 0): stdout berisi JSON dump, parse langsung.
+    return {
+      stdout,
+      stderr,
+      payload: parseJsonBlob(stdout),
+    };
   } catch (error) {
     const output = `${error.stdout || ''}\n${error.stderr || ''}`.trim();
     if (!output) {

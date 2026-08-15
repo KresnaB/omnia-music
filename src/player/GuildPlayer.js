@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -31,6 +32,13 @@ import {
   nowUnixPlus,
   truncate,
 } from "../utils/format.js";
+
+// Fetcher chunked: CDN googlevideo menolak Range >= ~1MB / full-file / tanpa
+// batas (403 anti-ripping). Skrip ini mengambil file dalam chunk parsial
+// 400KB yang disambung -> selalu diterima (206).
+const CHUNKED_FETCH_PATH = fileURLToPath(
+  new URL("../utils/chunked-fetch.mjs", import.meta.url),
+);
 
 function isUrl(value) {
   return /^https?:\/\//i.test(String(value || "").trim());
@@ -2056,7 +2064,11 @@ export class GuildPlayer {
       );
     }
 
-    if (inputMode === "url" || inputMode === "local") {
+    if (
+      inputMode === "url" ||
+      inputMode === "local" ||
+      inputMode === "stdin"
+    ) {
       args.push(
         ...(track.seekSeconds > 0 ? ["-ss", String(track.seekSeconds)] : []),
       );
@@ -2156,6 +2168,12 @@ export class GuildPlayer {
     return args;
   }
 
+  spawnChunkedSource(streamUrl) {
+    return spawn(process.execPath, [CHUNKED_FETCH_PATH, streamUrl], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  }
+
   spawnAudioProcess(
     track,
     profile = "opus",
@@ -2219,13 +2237,13 @@ export class GuildPlayer {
     const sourceFailure = sourceProcess
       ? new Promise((_, reject) => {
           sourceProcess.once("error", (error) => {
-            reject(new Error(`yt-dlp pipe spawn failed: ${error.message}`));
+            reject(new Error(`stream pipe spawn failed: ${error.message}`));
           });
           sourceProcess.once("close", (code) => {
             if (!probeReady && code !== 0) {
               reject(
                 new Error(
-                  `yt-dlp pipe exited with code ${code}${sourceStderr.trim() ? `: ${truncate(sourceStderr.trim(), 700)}` : ""}`,
+                  `stream pipe exited with code ${code}${sourceStderr.trim() ? `: ${truncate(sourceStderr.trim(), 700)}` : ""}`,
                 ),
               );
             }
@@ -2255,8 +2273,28 @@ export class GuildPlayer {
       );
     }
 
-    const primaryInputMode = track.localPath ? "local" : "url";
-    let processState = this.spawnAudioProcess(track, "opus", primaryInputMode, null, fadeIn);
+    // YouTube CDN (googlevideo) menolak request Range >= ~1MB, full-file, atau
+    // tanpa batas (403 Forbidden, anti-ripping). Solusi: chunked-fetch (curl
+    // parsial 400KB disambung) -> pipe ke ffmpeg (stdin), selalu diterima (206).
+    const useCurlPipe =
+      !track.localPath &&
+      track.streamUrl &&
+      /googlevideo\.com\//i.test(track.streamUrl);
+    const primaryInputMode = track.localPath
+      ? "local"
+      : useCurlPipe
+        ? "stdin"
+        : "url";
+    const curlSource = useCurlPipe
+      ? this.spawnChunkedSource(track.streamUrl)
+      : null;
+    let processState = this.spawnAudioProcess(
+      track,
+      "opus",
+      primaryInputMode,
+      curlSource,
+      fadeIn,
+    );
     let probed;
 
     try {

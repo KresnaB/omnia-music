@@ -10,3 +10,4 @@ data/
 server/server
 web/dist/
 *.bak
+.env.bot
