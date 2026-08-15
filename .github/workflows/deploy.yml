@@ -6,9 +6,10 @@ on:
   workflow_dispatch:
 
 env:
-  # github.repository_owner bisa kapital (mis. "KresnaB") -> nama image registry
-  # wajib lowercase. github.repository selalu lowercase ("kresnab/omnia-music").
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # Nama image registry wajib lowercase. github.repository_owner & github.repository
+  # mengembalikan "KresnaB" (kapital) karena username bisa kapital -> hardcode
+  # lowercase "kresnab" (case-insensitive di GitHub).
+  IMAGE_NAME: ghcr.io/kresnab/omnia-music
 
 jobs:
   build:
