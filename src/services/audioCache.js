@@ -1,16 +1,7 @@
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import Fuse from 'fuse.js';
 import { config } from '../config.js';
-
-// Fetcher chunked: CDN googlevideo menolak Range >= ~1MB / full-file / tanpa
-// batas (403 anti-ripping). Skrip ini mengambil file dalam chunk parsial
-// 400KB yang disambung -> selalu diterima (206).
-const CHUNKED_FETCH_PATH = fileURLToPath(
-  new URL('../utils/chunked-fetch.mjs', import.meta.url),
-);
 
 const CANONICAL_NOISE_PATTERNS = [
   /\b(official|audio|video|lyrics?|lyric|visualizer|mv|hd|hq|4k|8k)\b/gi,
@@ -551,94 +542,7 @@ export class AudioCacheService {
   }
 
   async downloadTrack(track, canonicalKey) {
-    if (!track.streamUrl) {
-      throw new Error('direct stream URL belum tersedia untuk download cache');
-    }
-
-    const baseName = sanitizeFilePart(`${canonicalKey}-${track.title || 'track'}`);
-    const finalName = `${baseName}.ogg`;
-    const tempName = `${baseName}.${Date.now()}.part.ogg`;
-    const finalPath = path.join(config.audioCacheDir, finalName);
-    const tempPath = path.join(config.audioCacheDir, tempName);
-
-    // googlevideo menolak request Range >= ~1MB / full-file / tanpa batas
-    // (403 anti-ripping). Pakai chunked-fetch (curl parsial 400KB disambung)
-    // -> pipe ke ffmpeg (stdin), selalu diterima (206).
-    const chunkedFetch = spawn(process.execPath, [
-      CHUNKED_FETCH_PATH,
-      track.streamUrl,
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-
-    const ffmpegArgs = [
-      '-nostdin',
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-i',
-      'pipe:0',
-      '-vn',
-      '-sn',
-      '-dn',
-      '-map',
-      'a?',
-      '-c:a',
-      'libopus',
-      '-application',
-      'audio',
-      '-frame_duration',
-      '20',
-      '-compression_level',
-      '10',
-      '-b:a',
-      `${config.audioCacheBitrateKbps}k`,
-      '-vbr',
-      'on',
-      '-f',
-      'ogg',
-      '-y',
-      tempPath
-    ];
-
-    const ffmpegProcess = spawn(config.ffmpegPath, ffmpegArgs, {
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    chunkedFetch.stdout.pipe(ffmpegProcess.stdin);
-
-    try {
-      await Promise.all([
-        waitForExit(ffmpegProcess, 'ffmpeg'),
-        waitForExit(chunkedFetch, 'chunked-fetch')
-      ]);
-
-      await rm(finalPath, { force: true }).catch(() => null);
-      await rename(tempPath, finalPath);
-      const fileStat = await stat(finalPath);
-      const entry = {
-        canonicalKey,
-        fileName: finalName,
-        filePath: finalPath,
-        sizeBytes: fileStat.size,
-        createdAt: Date.now(),
-        lastAccessedAt: Date.now(),
-        track: cloneTrackMeta({
-          ...track,
-          canonicalKey
-        })
-      };
-
-      this.index.set(canonicalKey, entry);
-      await this.enforceLimits();
-      await this.persistIndex();
-      this.rebuildSearchIndex();
-      return entry;
-    } catch (error) {
-      ffmpegProcess.kill('SIGKILL');
-      chunkedFetch.kill('SIGKILL');
-      await rm(tempPath, { force: true }).catch(() => null);
-      throw error;
-    }
+    throw new Error('Download lagu baru ke cache lokal dinonaktifkan');
   }
 
   async enforceLimits() {

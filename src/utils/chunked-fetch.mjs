@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 
 const CHUNK_SIZE = 409600; // 400KB — di bawah ambang penolakan CDN
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 3;
 
 const url = process.argv[2];
 if (!url) {
@@ -16,11 +16,29 @@ if (!url) {
   process.exit(2);
 }
 
+// Tangani EPIPE jika proses hilir (ffmpeg) dimatikan (misal saat skip lagu)
+process.stdout.on("error", (err) => {
+  if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") {
+    process.exit(0);
+  }
+});
+
 function fetchRange(start, end, attempt = 0) {
   return new Promise((resolve, reject) => {
     const curl = spawn(
       "curl",
-      ["-sS", "-f", "-L", "--retry", "1", "-r", `${start}-${end}`, url],
+      [
+        "-sS",
+        "-f",
+        "-L",
+        "--retry",
+        "2",
+        "--retry-delay",
+        "1",
+        "-r",
+        `${start}-${end}`,
+        url,
+      ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     let received = 0;
@@ -31,22 +49,36 @@ function fetchRange(start, end, attempt = 0) {
     curl.stdout.on("data", (c) => {
       received += c.length;
     });
-    curl.stdout.pipe(process.stdout);
+    curl.stdout.on("error", () => {});
+    // PENTING: { end: false } agar process.stdout TIDAK ditutup saat proses curl satu chunk selesai
+    curl.stdout.pipe(process.stdout, { end: false });
     curl.once("error", reject);
-    curl.once("close", (code) => {
+    curl.once("close", async (code) => {
       if (code === 0) {
         resolve(received);
         return;
       }
       // 416 = range di luar akhir file -> normal EOF
-      if (stderr.includes("416")) {
+      if (stderr.includes("416") || (code === 22 && stderr.includes("416"))) {
         resolve(0);
         return;
       }
-      // Retry hanya jika belum ada byte yang ter-stream (hindari duplikasi)
-      if (attempt < MAX_RETRIES && received === 0) {
-        resolve(fetchRange(start, end, attempt + 1));
-        return;
+      // Retry sisa chunk jika gagal di tengah jalan
+      if (attempt < MAX_RETRIES) {
+        const nextStart = start + received;
+        if (nextStart > end) {
+          resolve(received);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        try {
+          const rest = await fetchRange(nextStart, end, attempt + 1);
+          resolve(received + rest);
+          return;
+        } catch (retryError) {
+          reject(retryError);
+          return;
+        }
       }
       reject(
         new Error(
@@ -68,6 +100,7 @@ async function main() {
     }
     start = end + 1;
   }
+  process.stdout.end();
   process.exit(0);
 }
 
