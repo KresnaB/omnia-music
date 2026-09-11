@@ -222,16 +222,7 @@ export class GuildPlayer {
         return;
       }
 
-      if (this.currentProcess) {
-        console.log(`[IDLE:${this.guildId}] Killing currentProcess (pid: ${this.currentProcess.pid})`);
-        this.currentProcess.kill("SIGKILL");
-        this.currentProcess = null;
-      }
-      if (this.currentSourceProcess) {
-        console.log(`[IDLE:${this.guildId}] Killing currentSourceProcess`);
-        this.currentSourceProcess.kill("SIGKILL");
-        this.currentSourceProcess = null;
-      }
+      this.killCurrentProcesses("idle");
 
       const finished = this.current;
       const wasSkipped = this.skipRequested;
@@ -277,14 +268,7 @@ export class GuildPlayer {
     this.player.on("error", async (error) => {
       console.error(`[PLAYER_ERROR:${this.guildId}] Player error event`, error);
       console.log(`[PLAYER_ERROR:${this.guildId}] consecutiveErrors=${this.consecutiveErrors} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length}`);
-      if (this.currentProcess) {
-        this.currentProcess.kill("SIGKILL");
-        this.currentProcess = null;
-      }
-      if (this.currentSourceProcess) {
-        this.currentSourceProcess.kill("SIGKILL");
-        this.currentSourceProcess = null;
-      }
+      this.killCurrentProcesses("player-error");
 
       this.consecutiveErrors++;
       const youtubeErrorKind = getYoutubeErrorKind(error);
@@ -1314,7 +1298,12 @@ export class GuildPlayer {
   }
 
   addLyricMessage(msg) {
-    if (msg) this.lyricMessages.push(msg);
+    if (!msg) return;
+    this.lyricMessages.push(msg);
+    if (this.lyricMessages.length > 10) {
+      const oldest = this.lyricMessages.shift();
+      oldest?.delete().catch(() => null);
+    }
   }
 
   clearLyricMessages() {
@@ -1928,19 +1917,11 @@ export class GuildPlayer {
 
       if (nonce !== this.playNonce) {
         console.log(`[PLAYNEXT:${this.guildId}] Nonce mismatch (expected=${nonce}, actual=${this.playNonce}), killing pipeline`);
-        prepared.process.kill("SIGKILL");
-        prepared.sourceProcess?.kill("SIGKILL");
+        this.killProcessPair(prepared.process, prepared.sourceProcess);
         return;
       }
 
-      if (this.currentProcess) {
-        console.log(`[PLAYNEXT:${this.guildId}] Killing old currentProcess`);
-        this.currentProcess.kill("SIGKILL");
-      }
-      if (this.currentSourceProcess) {
-        console.log(`[PLAYNEXT:${this.guildId}] Killing old currentSourceProcess`);
-        this.currentSourceProcess.kill("SIGKILL");
-      }
+      this.killCurrentProcesses("playnext");
 
       this.clearLyricMessages();
       this.currentProcess = prepared.process;
@@ -2050,13 +2031,73 @@ export class GuildPlayer {
       .join("");
   }
 
+  killProcessPair(ffmpegProcess, sourceProcess) {
+    if (sourceProcess) {
+      try {
+        if (sourceProcess.stdout && !sourceProcess.stdout.destroyed) {
+          sourceProcess.stdout.unpipe();
+          sourceProcess.stdout.destroy();
+        }
+      } catch {}
+      try {
+        if (sourceProcess.stderr && !sourceProcess.stderr.destroyed) {
+          sourceProcess.stderr.destroy();
+        }
+      } catch {}
+      try {
+        if (sourceProcess.stdin && !sourceProcess.stdin.destroyed) {
+          sourceProcess.stdin.destroy();
+        }
+      } catch {}
+      try {
+        if (!sourceProcess.killed) {
+          sourceProcess.kill("SIGKILL");
+        }
+      } catch {}
+    }
+
+    if (ffmpegProcess) {
+      try {
+        if (ffmpegProcess.stdin && !ffmpegProcess.stdin.destroyed) {
+          ffmpegProcess.stdin.destroy();
+        }
+      } catch {}
+      try {
+        if (ffmpegProcess.stdout && !ffmpegProcess.stdout.destroyed) {
+          ffmpegProcess.stdout.destroy();
+        }
+      } catch {}
+      try {
+        if (ffmpegProcess.stderr && !ffmpegProcess.stderr.destroyed) {
+          ffmpegProcess.stderr.destroy();
+        }
+      } catch {}
+      try {
+        if (!ffmpegProcess.killed) {
+          ffmpegProcess.kill("SIGKILL");
+        }
+      } catch {}
+    }
+  }
+
+  killCurrentProcesses(context = "unknown") {
+    if (this.currentProcess || this.currentSourceProcess) {
+      console.log(
+        `[PROCESS_CLEANUP:${this.guildId}] Cleaning current processes | context=${context} | ffmpegPid=${this.currentProcess?.pid || "null"} | sourcePid=${this.currentSourceProcess?.pid || "null"}`,
+      );
+      this.killProcessPair(this.currentProcess, this.currentSourceProcess);
+      this.currentProcess = null;
+      this.currentSourceProcess = null;
+    }
+  }
+
   buildFfmpegArgs(track, profile = "opus") {
     return this.buildFfmpegArgsForInput(track, profile, "url");
   }
 
   buildFfmpegArgsForInput(track, profile = "opus", inputMode = "url") {
     const headers = inputMode === "url" ? this.buildHttpHeaders(track) : "";
-    const args = ["-nostdin", "-hide_banner", "-loglevel", "error"];
+    const args = ["-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "2"];
 
     if (inputMode === "local") {
       args.push(
@@ -2219,11 +2260,11 @@ export class GuildPlayer {
 
     // Clean up pair when either finishes
     process.once("close", () => {
-      sourceProcess?.kill("SIGKILL");
+      this.killProcessPair(null, sourceProcess);
     });
     sourceProcess?.once("close", (code) => {
       if (!probeReady && code !== 0) {
-        process.kill("SIGKILL");
+        this.killProcessPair(process, null);
       }
     });
     sourceProcess?.on("error", (err) => {
@@ -2231,7 +2272,7 @@ export class GuildPlayer {
         `[STREAM_PIPE_ERROR:${this.guildId}] Source process error:`,
         err?.message || err,
       );
-      process.kill("SIGKILL");
+      this.killProcessPair(process, sourceProcess);
     });
 
     const startupFailure = new Promise((_, reject) => {
@@ -2318,8 +2359,7 @@ export class GuildPlayer {
     try {
       probed = await processState.probe;
     } catch (error) {
-      processState.process.kill("SIGKILL");
-      processState.sourceProcess?.kill("SIGKILL");
+      this.killProcessPair(processState.process, processState.sourceProcess);
       const message = String(error?.message || "");
       const canRetryWithPcm =
         /libopus|encoder|codec|output format|s16le|ogg/i.test(message) ||
@@ -2352,8 +2392,7 @@ export class GuildPlayer {
       try {
         probed = await processState.probe;
       } catch (retryError) {
-        processState.process.kill("SIGKILL");
-        processState.sourceProcess?.kill("SIGKILL");
+        this.killProcessPair(processState.process, processState.sourceProcess);
         throw retryError;
       }
     }
@@ -2672,7 +2711,7 @@ export class GuildPlayer {
 
       if (nonce !== this.playNonce) {
         console.log(`[SKIP:${this.guildId}] Nonce changed after probe, killing process`);
-        process.kill("SIGKILL");
+        this.killProcessPair(process, null);
         return true;
       }
 
@@ -2684,16 +2723,7 @@ export class GuildPlayer {
         metadata: nextTrack,
       });
 
-      // Kill old processes
-      if (this.currentProcess) {
-        console.log(`[SKIP:${this.guildId}] Killing old currentProcess`);
-        this.currentProcess.kill("SIGKILL");
-      }
-      if (this.currentSourceProcess) {
-        console.log(`[SKIP:${this.guildId}] Killing old currentSourceProcess`);
-        this.currentSourceProcess.kill("SIGKILL");
-      }
-
+      this.killCurrentProcesses("skip");
       this.clearLyricMessages();
       this.currentProcess = process;
       this.currentSourceProcess = null;
@@ -2773,18 +2803,9 @@ export class GuildPlayer {
     this.sleepUntil = null;
     this.player.stop(true);
 
-    if (this.currentProcess) {
-      console.log(`[STOP:${this.guildId}] Killing currentProcess`);
-      this.currentProcess.kill("SIGKILL");
-      this.currentProcess = null;
-    }
-    if (this.currentSourceProcess) {
-      console.log(`[STOP:${this.guildId}] Killing currentSourceProcess`);
-      this.currentSourceProcess.kill("SIGKILL");
-      this.currentSourceProcess = null;
-    }
-
+    this.killCurrentProcesses("stop");
     this.clearLyricMessages();
+    this.preloadInFlight.clear();
     if (this.currentMessage) {
       await this.currentMessage.delete().catch(() => null);
       this.currentMessage = null;
