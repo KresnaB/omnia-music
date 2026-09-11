@@ -134,6 +134,7 @@ export class GuildPlayer {
     this.consecutiveErrors = 0;
     this.skipRequested = false;
     this.skipTransitionActive = false;
+    this.skipTransitionTimeout = null;
     this.stopRequested = false;
     this.autoplayPreparePromise = null;
     this.autoplaySeedId = null;
@@ -146,6 +147,7 @@ export class GuildPlayer {
     this.voiceReconnectAttempts = 0;
     this.voiceDisconnectNotified = false;
     this.pausedForVoiceReconnect = false;
+    this.voiceStateWatchdogTimer = null;
     this.youtubeStatus = "unknown";
     this.youtubeFailureReason = null;
     this.youtubeFailureKind = null;
@@ -171,7 +173,7 @@ export class GuildPlayer {
     });
 
     this.player.on(AudioPlayerStatus.Playing, async () => {
-      this.skipTransitionActive = false;
+      this.setSkipTransitionActive(false);
       this.stopRequested = false;
       this.playbackStartedAt = Date.now();
       console.log(`[PLAYING:${this.guildId}] Playing event fired | current=${
@@ -970,6 +972,20 @@ export class GuildPlayer {
             connection = null;
           }
         }
+      } else if (
+        state === VoiceConnectionStatus.Signalling ||
+        state === VoiceConnectionStatus.Connecting
+      ) {
+        try {
+          // Jika sudah di Signalling/Connecting, beri toleransi singkat (3s) untuk mencapai Ready
+          await entersState(connection, VoiceConnectionStatus.Ready, 3_000);
+        } catch {
+          console.warn(
+            `[VOICE:${this.guildId}] Connection stuck in ${state} during ensureVoice, recreating connection`,
+          );
+          connection.destroy();
+          connection = null;
+        }
       } else if (state === VoiceConnectionStatus.Destroyed) {
         connection = null;
       }
@@ -1023,16 +1039,79 @@ export class GuildPlayer {
 
     connection.__omniaHandlersAttached = true;
     connection.on(VoiceConnectionStatus.Ready, () => {
+      this.clearVoiceStateWatchdog();
       this.voiceReconnectAttempts = 0;
       this.voiceDisconnectNotified = false;
-      if (this.current && this.pausedForVoiceReconnect) {
+      if (
+        this.current &&
+        (this.pausedForVoiceReconnect ||
+          this.player.state.status === AudioPlayerStatus.Paused)
+      ) {
         this.player.unpause();
       }
       this.pausedForVoiceReconnect = false;
     });
+
     connection.on(VoiceConnectionStatus.Disconnected, () => {
+      this.clearVoiceStateWatchdog();
       void this.handleVoiceDisconnected(connection);
     });
+
+    connection.on("stateChange", (oldState, newState) => {
+      if (
+        oldState.status === VoiceConnectionStatus.Ready &&
+        (newState.status === VoiceConnectionStatus.Signalling ||
+          newState.status === VoiceConnectionStatus.Connecting)
+      ) {
+        // Jika koneksi keluar dari Ready ke Signalling/Connecting (misal Discord voice server migration),
+        // mulai watchdog agar jika tidak kembali Ready dalam 15 detik, otomatis auto-reconnect.
+        this.startVoiceStateWatchdog();
+      } else if (newState.status === VoiceConnectionStatus.Ready) {
+        this.clearVoiceStateWatchdog();
+      }
+    });
+
+    connection.on("error", (error) => {
+      console.error(
+        `[VOICE_ERROR:${this.guildId}] Voice connection error:`,
+        error?.message || error,
+      );
+      if (
+        connection.state.status !== VoiceConnectionStatus.Ready &&
+        !this.stopRequested
+      ) {
+        this.scheduleVoiceReconnect();
+      }
+    });
+  }
+
+  clearVoiceStateWatchdog() {
+    clearTimeout(this.voiceStateWatchdogTimer);
+    this.voiceStateWatchdogTimer = null;
+  }
+
+  startVoiceStateWatchdog(timeoutMs = 15_000) {
+    this.clearVoiceStateWatchdog();
+    this.voiceStateWatchdogTimer = setTimeout(() => {
+      this.voiceStateWatchdogTimer = null;
+      const connection = getVoiceConnection(this.guildId);
+      if (
+        connection &&
+        connection.state.status !== VoiceConnectionStatus.Ready &&
+        !this.stopRequested
+      ) {
+        console.warn(
+          `[VOICE:${this.guildId}] Voice connection stuck in ${connection.state.status} for ${timeoutMs}ms, triggering auto-reconnect`,
+        );
+        if (
+          !this.pausedForVoiceReconnect &&
+          this.player.state.status === AudioPlayerStatus.Playing
+        ) {
+          this.pausedForVoiceReconnect = this.player.pause();
+        }
+        this.scheduleVoiceReconnect();
+      }
+    }, timeoutMs);
   }
 
   async handleVoiceDisconnected(connection) {
@@ -1048,10 +1127,15 @@ export class GuildPlayer {
     }
 
     try {
+      // 1. Tunggu apakah connection masuk tahap re-signalling / connecting (maks 5s)
       await Promise.race([
         entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
         entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
       ]);
+      // 2. Pastikan connection benar-benar mencapai Ready dalam 15s.
+      // Jika stuck di Signalling/Connecting (misal DAVE handshake gagal atau server hop macet),
+      // entersState akan timeout dan memicu catch -> scheduleVoiceReconnect().
+      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
       return;
     } catch {
       this.scheduleVoiceReconnect();
@@ -1115,7 +1199,11 @@ export class GuildPlayer {
       const connection = getVoiceConnection(this.guildId);
       connection?.destroy();
       await this.ensureVoice(channel);
-      if (this.current && this.pausedForVoiceReconnect) {
+      if (
+        this.current &&
+        (this.pausedForVoiceReconnect ||
+          this.player.state.status === AudioPlayerStatus.Paused)
+      ) {
         this.player.unpause();
       }
       this.pausedForVoiceReconnect = false;
@@ -2410,6 +2498,22 @@ export class GuildPlayer {
     }
   }
 
+  setSkipTransitionActive(active) {
+    this.skipTransitionActive = active;
+    clearTimeout(this.skipTransitionTimeout);
+    this.skipTransitionTimeout = null;
+    if (active) {
+      this.skipTransitionTimeout = setTimeout(() => {
+        if (this.skipTransitionActive) {
+          console.warn(
+            `[SKIP:${this.guildId}] skipTransitionActive safety timeout expired (8s), resetting flag`,
+          );
+          this.skipTransitionActive = false;
+        }
+      }, 8_000);
+    }
+  }
+
   async skip() {
     console.log(`[SKIP:${this.guildId}] skip() called | current=${this.current ? truncate(this.current.title, 80) : 'null'} | queue=${this.queue.length} | skipTransitionActive=${this.skipTransitionActive} | skipRequested=${this.skipRequested} | playerStatus=${this.player.state.status} | playNextPromise=${Boolean(this.playNextPromise)}`);
 
@@ -2425,7 +2529,7 @@ export class GuildPlayer {
 
     this.consecutiveErrors = 0; // Reset counter jika skip manual
     this.skipRequested = true;
-    this.skipTransitionActive = true;
+    this.setSkipTransitionActive(true);
     this.playNonce += 1;
     console.log(`[SKIP:${this.guildId}] State set | skipRequested=true | skipTransitionActive=true | playNonce=${this.playNonce}`);
 
@@ -2455,7 +2559,7 @@ export class GuildPlayer {
     const canCrossfade = Boolean(currentTrack?.localPath && nextTrack?.localPath);
     if (!canCrossfade) {
       console.log(`[SKIP:${this.guildId}] Crossfade not applicable (not both local files), falling back to regular skip`);
-      this.skipTransitionActive = false;
+      this.setSkipTransitionActive(false);
       this.skipRequested = true;
       this.player.stop(true);
       return true;
@@ -2471,7 +2575,7 @@ export class GuildPlayer {
     // Crossfade hanya jika remaining time cukup
     if (remainingSeconds < 1) {
       console.log(`[SKIP:${this.guildId}] Remaining time < 1s, falling back to hard stop`);
-      this.skipTransitionActive = false;
+      this.setSkipTransitionActive(false);
       this.player.stop(true);
       return true;
     }
@@ -2594,7 +2698,7 @@ export class GuildPlayer {
       this.playNonce = nonce;
       this.current = currentTrack;
       this.queue.unshift(nextTrack);
-      this.skipTransitionActive = false;
+      this.setSkipTransitionActive(false);
       console.log(`[SKIP:${this.guildId}] Fallback: calling player.stop(true)`);
       this.player.stop(true);
     }
@@ -2617,7 +2721,8 @@ export class GuildPlayer {
     this.consecutiveErrors = 0;
     this.playNonce += 1;
     this.stopRequested = true;
-    this.skipTransitionActive = false;
+    this.setSkipTransitionActive(false);
+    this.clearVoiceStateWatchdog();
     clearTimeout(this.voiceReconnectTimer);
     this.voiceReconnectTimer = null;
     this.voiceReconnectAttempts = 0;
