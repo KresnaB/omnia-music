@@ -933,26 +933,31 @@ export class GuildPlayer {
 
     if (connection) {
       const state = connection.state.status;
-      // Jika dalam state Disconnected, coba reconnect dulu
+      if (state === VoiceConnectionStatus.Ready) {
+        return connection;
+      }
+
       if (state === VoiceConnectionStatus.Disconnected) {
         const reason = connection.state.reason;
+        const closeCode = connection.state.closeCode;
         if (
           reason === VoiceConnectionDisconnectReason.WebSocketClose &&
-          connection.state.closeCode === 4014
+          closeCode === 4014
         ) {
-          // Kicked from channel — buat koneksi baru
+          // Kicked from channel — destroy dan beri jeda sebelum buat baru
           connection.destroy();
+          await new Promise((r) => setTimeout(r, 500));
           connection = null;
         } else {
           try {
-            // Coba rejoin channel yang sama
-            await entersState(
-              connection,
-              VoiceConnectionStatus.Connecting,
-              5_000,
-            );
+            console.log(`[VOICE:${this.guildId}] Trying connection.rejoin() in ensureVoice...`);
+            connection.rejoin({ channelId: voiceChannel.id });
+            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+            return connection;
           } catch {
+            console.warn(`[VOICE:${this.guildId}] Rejoin in ensureVoice timed out, recreating connection`);
             connection.destroy();
+            await new Promise((r) => setTimeout(r, 500));
             connection = null;
           }
         }
@@ -961,13 +966,15 @@ export class GuildPlayer {
         state === VoiceConnectionStatus.Connecting
       ) {
         try {
-          // Jika sudah di Signalling/Connecting, beri toleransi singkat (3s) untuk mencapai Ready
-          await entersState(connection, VoiceConnectionStatus.Ready, 3_000);
+          // Beri toleransi hingga 20s untuk DAVE handshake
+          await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+          return connection;
         } catch {
           console.warn(
             `[VOICE:${this.guildId}] Connection stuck in ${state} during ensureVoice, recreating connection`,
           );
           connection.destroy();
+          await new Promise((r) => setTimeout(r, 500));
           connection = null;
         }
       } else if (state === VoiceConnectionStatus.Destroyed) {
@@ -1074,7 +1081,7 @@ export class GuildPlayer {
     this.voiceStateWatchdogTimer = null;
   }
 
-  startVoiceStateWatchdog(timeoutMs = 15_000) {
+  startVoiceStateWatchdog(timeoutMs = 30_000) {
     this.clearVoiceStateWatchdog();
     this.voiceStateWatchdogTimer = setTimeout(() => {
       this.voiceStateWatchdogTimer = null;
@@ -1110,20 +1117,49 @@ export class GuildPlayer {
       this.pausedForVoiceReconnect = this.player.pause();
     }
 
-    try {
-      // 1. Tunggu apakah connection masuk tahap re-signalling / connecting (maks 5s)
-      await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-      ]);
-      // 2. Pastikan connection benar-benar mencapai Ready dalam 15s.
-      // Jika stuck di Signalling/Connecting (misal DAVE handshake gagal atau server hop macet),
-      // entersState akan timeout dan memicu catch -> scheduleVoiceReconnect().
-      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-      return;
-    } catch {
-      this.scheduleVoiceReconnect();
+    const reason = connection.state.reason;
+    const closeCode = connection.state.closeCode;
+
+    // 1. Jika 4014 (kicked dari channel atau dipindah channel oleh user/admin)
+    if (
+      reason === VoiceConnectionDisconnectReason.WebSocketClose &&
+      closeCode === 4014
+    ) {
+      try {
+        await entersState(connection, VoiceConnectionStatus.Connecting, 5_000);
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+        return;
+      } catch {
+        this.scheduleVoiceReconnect();
+        return;
+      }
     }
+
+    // 2. Disconnect biasa (server migration, connection reset, DAVE epoch change)
+    // Coba native connection.rejoin() terlebih dahulu (maks 3 kali percobaan cepat)
+    if (connection.rejoinAttempts < 3) {
+      const delay = Math.min((connection.rejoinAttempts + 1) * 1_500, 5_000);
+      await new Promise((r) => setTimeout(r, delay));
+      if (connection.state.status === VoiceConnectionStatus.Disconnected) {
+        console.log(
+          `[VOICE:${this.guildId}] Calling connection.rejoin() | attempt=${connection.rejoinAttempts + 1}`,
+        );
+        connection.rejoin();
+      }
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+        console.log(`[VOICE:${this.guildId}] Native connection.rejoin() succeeded!`);
+        return;
+      } catch (err) {
+        console.warn(
+          `[VOICE:${this.guildId}] Native rejoin failed to reach Ready:`,
+          err.message,
+        );
+      }
+    }
+
+    // 3. Jika native rejoin tidak membuahkan hasil, jadwalkan reconnect penuh
+    this.scheduleVoiceReconnect();
   }
 
   scheduleVoiceReconnect() {
@@ -1181,7 +1217,12 @@ export class GuildPlayer {
     try {
       this.voiceReconnectAttempts = attempt;
       const connection = getVoiceConnection(this.guildId);
-      connection?.destroy();
+      if (connection) {
+        connection.destroy();
+        // Beri jeda 800ms agar Discord Gateway tuntas memproses state disconnect
+        // sebelum instance VoiceConnection baru mendaftar (menghindari race condition)
+        await new Promise((r) => setTimeout(r, 800));
+      }
       await this.ensureVoice(channel);
       if (
         this.current &&
