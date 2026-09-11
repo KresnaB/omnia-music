@@ -44,6 +44,7 @@ async function runYtDlpJson(args) {
   try {
     const { stdout, stderr } = await execFileAsync(config.ytDlpPath, args, {
       maxBuffer: 16 * 1024 * 1024,
+      timeout: 30000,
     });
     // Jalur sukses (exit 0): stdout berisi JSON dump, parse langsung.
     return {
@@ -125,7 +126,9 @@ function buildBaseArgs() {
     '--default-search',
     config.defaultSearchPlatform,
     '--no-warnings',
-    '--skip-download'
+    '--skip-download',
+    '--socket-timeout',
+    '15'
   ];
 
   if (config.ytDlpYoutubeArgs) {

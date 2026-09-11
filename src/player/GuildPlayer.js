@@ -1548,10 +1548,6 @@ export class GuildPlayer {
       console.log(`[PREPARE:${this.guildId}] Metadata hydrated`);
     }
 
-    console.log(`[PREPARE:${this.guildId}] Ensuring stream URL...`);
-    await this.ytdlp.ensureStreamUrl(track);
-    console.log(`[PREPARE:${this.guildId}] Stream URL ready | streamUrl=${Boolean(track.streamUrl)}`);
-
     track.cacheStatus = track.localPath ? "cached" : "skipped";
     track.cacheError = null;
 
@@ -1714,7 +1710,39 @@ export class GuildPlayer {
           console.log(`[AUTOPLAY:${this.guildId}] Calling maybeResumePlayback | queueAfter=${this.queue.length} | playerStatus=${this.player.state.status}`);
           this.maybeResumePlayback("autoplay-ready");
         } else {
-          console.log(`[AUTOPLAY:${this.guildId}] Track is duplicate, not adding to queue`);
+          console.log(`[AUTOPLAY:${this.guildId}] Track is duplicate, trying secondary search or cache fallback...`);
+          let fallbackChosen = null;
+          try {
+            const fallbackQuery = `ytsearch5:${seed.uploader || seed.title} top songs`;
+            const searchAuto = await this.ytdlp.resolve(fallbackQuery);
+            const freshCandidates = searchAuto.tracks.filter(
+              (t) => t.id !== seed.id && !this.history.some((h) => h.id === t.id) && !this.queue.some((q) => q.id === t.id),
+            );
+            if (freshCandidates.length > 0) {
+              fallbackChosen = freshCandidates[Math.floor(Math.random() * Math.min(freshCandidates.length, 3))];
+            }
+          } catch {
+            fallbackChosen = null;
+          }
+
+          if (fallbackChosen && this.autoplaySeedId === seedKey) {
+            const fallbackPrepared = {
+              ...fallbackChosen,
+              requester: { id: "autoplay", name: "Autoplay" },
+              addedAt: Date.now(),
+              originalQuery: "Autoplay Secondary Search",
+            };
+            await this.ytdlp.hydrate(fallbackPrepared);
+            if (this.autoplaySeedId === seedKey) {
+              this.queue.push(fallbackPrepared);
+              this.shuffleActive = false;
+              void this.publishNowPlaying("queue-update");
+              this.maybeResumePlayback("autoplay-ready");
+              return;
+            }
+          }
+
+          await enqueueCacheAutoplay("Autoplay Duplicate Failover");
         }
       } catch (error) {
         console.error(`[AUTOPLAY:${this.guildId}] autoplay prepare error:`, error.message);
@@ -2133,6 +2161,8 @@ export class GuildPlayer {
       "--no-playlist",
       "-f",
       "bestaudio/best",
+      "--socket-timeout",
+      "15",
       "-o",
       "-",
       target,
@@ -2195,6 +2225,13 @@ export class GuildPlayer {
       if (!probeReady && code !== 0) {
         process.kill("SIGKILL");
       }
+    });
+    sourceProcess?.on("error", (err) => {
+      console.error(
+        `[STREAM_PIPE_ERROR:${this.guildId}] Source process error:`,
+        err?.message || err,
+      );
+      process.kill("SIGKILL");
     });
 
     const startupFailure = new Promise((_, reject) => {

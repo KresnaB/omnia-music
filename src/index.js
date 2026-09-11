@@ -433,13 +433,15 @@ client.on('interactionCreate', async (interaction) => {
           scheduleInteractionDelete(interaction);
           break;
         }
-        case 'skip':
-          await interaction.reply({
-            content: (await player.skip()) ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.',
-            flags: MessageFlags.Ephemeral
+        case 'skip': {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const skipped = await player.skip();
+          await interaction.editReply({
+            content: skipped ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.'
           });
           scheduleInteractionDelete(interaction);
           break;
+        }
         case 'stop':
           await player.stop({ disconnect: true });
           await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
@@ -623,13 +625,15 @@ client.on('interactionCreate', async (interaction) => {
           scheduleInteractionDelete(interaction);
           break;
         }
-        case 'player:skip':
-          await interaction.reply({
-            content: (await player.skip()) ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.',
-            flags: MessageFlags.Ephemeral
+        case 'player:skip': {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const skipped = await player.skip();
+          await interaction.editReply({
+            content: skipped ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.'
           });
           scheduleInteractionDelete(interaction);
           break;
+        }
         case 'player:stop':
           await player.stop({ disconnect: true });
           await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
