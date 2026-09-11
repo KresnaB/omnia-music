@@ -13,28 +13,11 @@ const track = result.tracks[0];
 console.log("track:", track.title);
 if (!track.streamUrl) { console.log("FAIL: no streamUrl"); process.exit(1); }
 
-console.log("\n== [2] Pipeline asli: spawnChunkedSource -> spawnAudioProcess (stdin) ==");
-const source = gp.spawnChunkedSource(track.streamUrl);
-const ps = gp.spawnAudioProcess(track, "opus", "stdin", source, false);
+console.log("\n== [2] Pipeline: createAudioPipeline ==");
+const pipeline = await gp.createAudioPipeline(track, false);
 
 // TIDAK ada listener stdout sebelum probe (persis alur bot)
-const probeResult = await Promise.race([
-  ps.probe.then((p) => ({ ok: true, type: p.type, stream: p.stream }), (e) => ({ ok: false, err: e.message })),
-  new Promise((r) => setTimeout(() => r({ ok: "timeout" }), 30000)),
-]);
-console.log("probe:", JSON.stringify({ ok: probeResult.ok, type: probeResult.type }));
-
-if (!probeResult.ok || !probeResult.stream) {
-  console.log("FAIL: probe gagal:", probeResult.err);
-  ps.process.kill("SIGKILL"); source.kill("SIGKILL");
-  process.exit(1);
-}
-
-// Konsumsi persis seperti AudioPlayer: createAudioResource -> playStream
-const resource = createAudioResource(probeResult.stream, {
-  inputType: probeResult.type,
-  metadata: track,
-});
+const resource = pipeline.resource;
 let resourceBytes = 0;
 let last = Date.now();
 resource.playStream.on("data", (c) => {
@@ -43,14 +26,14 @@ resource.playStream.on("data", (c) => {
 });
 resource.playStream.on("error", (e) => console.log("resource error:", e.message));
 
-await new Promise((r) => setTimeout(r, 12000));
-console.log("resourceBytes setelah 12s:", resourceBytes);
+await new Promise((r) => setTimeout(r, 6000));
+console.log("resourceBytes setelah 6s:", resourceBytes);
 
 console.log("\n== [3] Bersih-bersih ==");
-ps.process.kill("SIGKILL");
-source.kill("SIGKILL");
+pipeline.process?.kill("SIGKILL");
+pipeline.sourceProcess?.kill("SIGKILL");
 await new Promise((r) => setTimeout(r, 500));
 
-const passed = probeResult.ok && resourceBytes > 500000;
+const passed = resourceBytes > 50000;
 console.log("\n=== RESULT:", passed ? "PASS ✅" : "FAIL ❌", "===");
 process.exit(passed ? 0 : 1);

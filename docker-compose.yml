@@ -1,16 +1,13 @@
 services:
-  omnia-music:
-    image: ghcr.io/kresnab/omnia-music:latest
-    container_name: omnia-music
+  omnia-bot:
+    build:
+      context: .
+      dockerfile: bot.Dockerfile
+    image: omnia-bot:local
+    container_name: omnia-bot
     restart: unless-stopped
-    ports:
-      - "3002:3000"
     env_file:
       - .env
     volumes:
-      - /home/kresna/omnia-music/storage/audio-cache:/music:ro
-      - omnia-data:/app/data
-
-volumes:
-  omnia-data:
-    driver: local
+      - ./storage/audio-cache:/config/audio-cache
+      - ./cookies.txt:/config/cookies.txt

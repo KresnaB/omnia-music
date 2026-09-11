@@ -33,13 +33,6 @@ import {
   truncate,
 } from "../utils/format.js";
 
-// Fetcher chunked: CDN googlevideo menolak Range >= ~1MB / full-file / tanpa
-// batas (403 anti-ripping). Skrip ini mengambil file dalam chunk parsial
-// 400KB yang disambung -> selalu diterima (206).
-const CHUNKED_FETCH_PATH = fileURLToPath(
-  new URL("../utils/chunked-fetch.mjs", import.meta.url),
-);
-
 function isUrl(value) {
   return /^https?:\/\//i.test(String(value || "").trim());
 }
@@ -1423,17 +1416,6 @@ export class GuildPlayer {
     await this.publishNowPlaying("cache-update");
   }
 
-  queueCacheDownload(track) {
-    if (!track) return;
-    if (track.localPath) {
-      track.cacheStatus = "cached";
-      track.cacheError = null;
-    } else {
-      track.cacheStatus = "skipped";
-      track.cacheError = null;
-    }
-  }
-
   async prepareTrackForPlayback(
     track,
     { trigger = "play", allowBackgroundDownload = false } = {},
@@ -1708,10 +1690,14 @@ export class GuildPlayer {
     console.log(`[QUEUE_NEXT:${this.guildId}] queuePlayNext called | reason=${reason} | hasExistingPromise=${Boolean(this.playNextPromise)} | queue=${this.queue.length} | current=${Boolean(this.current)} | stopRequested=${this.stopRequested}`);
 
     const previous = this.playNextPromise || Promise.resolve();
-    const nextRun = previous.then(
-      () => this.playNext(reason),
-      () => this.playNext(reason),
-    );
+    const nextRun = previous
+      .catch((err) => {
+        console.error(`[QUEUE_NEXT:${this.guildId}] previous playNext failed:`, err?.message || err);
+      })
+      .then(() => this.playNext(reason))
+      .catch((err) => {
+        console.error(`[QUEUE_NEXT:${this.guildId}] playNext failed:`, err?.message || err);
+      });
     this.playNextPromise = nextRun.finally(() => {
       if (this.playNextPromise === nextRun) {
         console.log(`[QUEUE_NEXT:${this.guildId}] playNextPromise cleared after completion (reason=${reason})`);
@@ -1725,7 +1711,6 @@ export class GuildPlayer {
     console.log(`[PLAYNEXT:${this.guildId}] playNext called | reason=${reason} | queue=${this.queue.length} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | autoplay=${this.autoplay} | sleepUntil=${this.sleepUntil ? new Date(this.sleepUntil).toISOString() : 'null'} | stopRequested=${this.stopRequested} | consecutiveErrors=${this.consecutiveErrors}`);
 
     clearTimeout(this.idleTimeout);
-    this.clearPipelineCompletionTimer();
 
     if (this.sleepUntil && Date.now() >= this.sleepUntil) {
       console.log(`[PLAYNEXT:${this.guildId}] Sleep timer expired, stopping`);
@@ -2072,18 +2057,7 @@ export class GuildPlayer {
     if (config.ytDlpPotProviderArgs) {
       args.push("--extractor-args", config.ytDlpPotProviderArgs);
     }
-
-    if (config.ytDlpCookiesFile) {
-      args.push("--cookies", config.ytDlpCookiesFile);
-    }
-
     return args;
-  }
-
-  spawnChunkedSource(streamUrl) {
-    return spawn(process.execPath, [CHUNKED_FETCH_PATH, streamUrl], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
   }
 
   spawnAudioProcess(
@@ -2123,6 +2097,16 @@ export class GuildPlayer {
     }
     sourceProcess?.stderr?.on("data", (chunk) => {
       sourceStderr += chunk.toString();
+    });
+
+    // Clean up pair when either finishes
+    process.once("close", () => {
+      sourceProcess?.kill("SIGKILL");
+    });
+    sourceProcess?.once("close", (code) => {
+      if (!probeReady && code !== 0) {
+        process.kill("SIGKILL");
+      }
     });
 
     const startupFailure = new Promise((_, reject) => {
@@ -2179,32 +2163,29 @@ export class GuildPlayer {
   }
 
   async createAudioPipeline(track, fadeIn = false) {
-    if (!track.localPath && !track.streamUrl) {
+    if (!track.localPath && !track.streamUrl && !track.webpageUrl && !track.url && !track.title) {
       throw new Error(
-        `Gagal mendapatkan direct stream audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`,
+        `Gagal mendapatkan sumber audio untuk "${truncate(track.title, 50)}". Coba ulangi /play atau gunakan judul lagu.`,
       );
     }
 
-    // YouTube CDN (googlevideo) menolak request Range >= ~1MB, full-file, atau
-    // tanpa batas (403 Forbidden, anti-ripping). Solusi: chunked-fetch (curl
-    // parsial 400KB disambung) -> pipe ke ffmpeg (stdin), selalu diterima (206).
-    const useCurlPipe =
-      !track.localPath &&
-      track.streamUrl &&
-      /googlevideo\.com\//i.test(track.streamUrl);
-    const primaryInputMode = track.localPath
-      ? "local"
-      : useCurlPipe
-        ? "stdin"
-        : "url";
-    const curlSource = useCurlPipe
-      ? this.spawnChunkedSource(track.streamUrl)
-      : null;
+    const isLocal = Boolean(track.localPath);
+    const primaryInputMode = isLocal ? "local" : "stdin";
+    const sourceProcess = isLocal
+      ? null
+      : spawn(config.ytDlpPath, this.buildYtDlpPipeArgs(track), {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            PYTHONPATH: process.env.PYTHONPATH || "/root/yt-dlp-plugins",
+          },
+        });
+
     let processState = this.spawnAudioProcess(
       track,
       "opus",
       primaryInputMode,
-      curlSource,
+      sourceProcess,
       fadeIn,
     );
     let probed;
@@ -2220,91 +2201,38 @@ export class GuildPlayer {
         /Unknown encoder|Invalid argument|could not write header/i.test(
           message,
         );
-      const canRetryViaYtDlpPipe =
-        primaryInputMode === "url" &&
-        /403|401|404|server returned|input\/output error|end of file|invalid data found|Connection reset|Forbidden|googlevideo/i.test(
-          message,
-        );
 
-      if (canRetryViaYtDlpPipe) {
-        const sourceProcess = spawn(
-          config.ytDlpPath,
-          this.buildYtDlpPipeArgs(track),
-          {
+      if (!canRetryWithPcm) {
+        throw error;
+      }
+
+      console.log(`[PIPELINE:${this.guildId}] Retrying pipeline with PCM fallback`);
+      const retrySourceProcess = isLocal
+        ? null
+        : spawn(config.ytDlpPath, this.buildYtDlpPipeArgs(track), {
             stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        processState = this.spawnAudioProcess(
-          track,
-          "opus",
-          "stdin",
-          sourceProcess,
-          fadeIn,
-        );
-        try {
-          probed = await processState.probe;
-        } catch (pipeError) {
-          processState.process.kill("SIGKILL");
-          processState.sourceProcess?.kill("SIGKILL");
-          const pipeMessage = String(pipeError?.message || "");
-          const canRetryPipeWithPcm =
-            /libopus|encoder|codec|output format|s16le|ogg/i.test(
-              pipeMessage,
-            ) ||
-            /Unknown encoder|Invalid argument|could not write header/i.test(
-              pipeMessage,
-            );
-
-          if (!canRetryPipeWithPcm) {
-            console.log(`[PIPELINE:${this.guildId}] Cannot retry pipe with PCM, throwing`);
-            throw pipeError;
-          }
-
-          console.log(`[PIPELINE:${this.guildId}] Retrying yt-dlp pipe with PCM fallback`);
-          processState.sourceProcess?.kill("SIGKILL");
-          const sourceProcessPcm = spawn(
-            config.ytDlpPath,
-            this.buildYtDlpPipeArgs(track),
-            {
-              stdio: ["ignore", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              PYTHONPATH: process.env.PYTHONPATH || "/root/yt-dlp-plugins",
             },
-          );
-          processState = this.spawnAudioProcess(
-            track,
-            "pcm",
-            "stdin",
-            sourceProcessPcm,
-            fadeIn,
-          );
-          try {
-            probed = await processState.probe;
-            console.log(`[PIPELINE:${this.guildId}] yt-dlp pipe (PCM) probe succeeded`);
-          } catch (pipeRetryError) {
-            console.error(`[PIPELINE:${this.guildId}] yt-dlp pipe (PCM) also failed: ${pipeRetryError.message}`);
-            processState.process.kill("SIGKILL");
-            processState.sourceProcess?.kill("SIGKILL");
-            throw pipeRetryError;
-          }
-        }
-      } else {
-        if (!canRetryWithPcm) {
-          console.log(`[PIPELINE:${this.guildId}] Cannot retry, throwing original error`);
-          throw error;
-        }
+          });
 
-        console.log(`[PIPELINE:${this.guildId}] Retrying with PCM (local/url input)`);
-        processState = this.spawnAudioProcess(track, "pcm", primaryInputMode, null, fadeIn);
-        try {
-          probed = await processState.probe;
-          console.log(`[PIPELINE:${this.guildId}] PCM retry probe succeeded`);
-        } catch (retryError) {
-          console.error(`[PIPELINE:${this.guildId}] PCM retry also failed: ${retryError.message}`);
-          processState.process.kill("SIGKILL");
-          processState.sourceProcess?.kill("SIGKILL");
-          throw retryError;
-        }
+      processState = this.spawnAudioProcess(
+        track,
+        "pcm",
+        primaryInputMode,
+        retrySourceProcess,
+        fadeIn,
+      );
+      try {
+        probed = await processState.probe;
+      } catch (retryError) {
+        processState.process.kill("SIGKILL");
+        processState.sourceProcess?.kill("SIGKILL");
+        throw retryError;
       }
     }
+
     processState.markProbeReady();
     console.log(`[PIPELINE:${this.guildId}] Pipeline created successfully | inputType=${probed.type} | pid=${processState.process.pid}`);
     const resource = createAudioResource(probed.stream, {
@@ -2524,13 +2452,11 @@ export class GuildPlayer {
     const currentTrack = this.current;
     const nextTrack = this.queue[0];
 
-    console.log(`[SKIP:${this.guildId}] Attempting crossfade skip | nonce=${nonce} | currentTrack=${currentTrack ? truncate(currentTrack.title, 80) : 'null'} | nextTrack=${nextTrack ? truncate(nextTrack.title, 80) : 'null'} | nextTrackHasStream=${Boolean(nextTrack?.streamUrl || nextTrack?.localPath)}`);
-
-    if (!currentTrack || !nextTrack || (!currentTrack.streamUrl && !currentTrack.localPath)) {
-      console.log(`[SKIP:${this.guildId}] Crossfade not possible, falling back to hard stop: missing current=${Boolean(currentTrack)} missing next=${Boolean(nextTrack)} hasStream=${Boolean(nextTrack?.streamUrl || nextTrack?.localPath)}`);
-      // Fallback: skip without crossfade
+    const canCrossfade = Boolean(currentTrack?.localPath && nextTrack?.localPath);
+    if (!canCrossfade) {
+      console.log(`[SKIP:${this.guildId}] Crossfade not applicable (not both local files), falling back to regular skip`);
       this.skipTransitionActive = false;
-      console.log(`[SKIP:${this.guildId}] Calling player.stop(true) for hard skip`);
+      this.skipRequested = true;
       this.player.stop(true);
       return true;
     }

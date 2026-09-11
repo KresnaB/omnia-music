@@ -27,10 +27,11 @@ RUN npm ci --omit=dev
 COPY src /app/src
 COPY .env.example /app/.env.example
 
-RUN mkdir -p /app/config
+RUN mkdir -p /app/config && mkdir -p /root/.yt-dlp && cp -r /root/yt-dlp-plugins /root/.yt-dlp/plugins
 
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
 ENV HOME=/root
+ENV PYTHONPATH=/root/yt-dlp-plugins
 
 CMD ["node", "src/index.js"]

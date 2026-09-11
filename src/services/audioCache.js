@@ -284,8 +284,15 @@ export class AudioCacheService {
   }
 
   async loadIndex() {
-    await mkdir(config.audioCacheDir, { recursive: true });
-    await mkdir(path.dirname(config.audioCacheIndexFile), { recursive: true });
+    try {
+      await mkdir(config.audioCacheDir, { recursive: true });
+      await mkdir(path.dirname(config.audioCacheIndexFile), { recursive: true });
+    } catch (err) {
+      if (err.code === 'EACCES') {
+        const localFallbackDir = path.resolve('./storage/audio-cache');
+        await mkdir(localFallbackDir, { recursive: true }).catch(() => null);
+      }
+    }
 
     let parsed = [];
     try {

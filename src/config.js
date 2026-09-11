@@ -11,6 +11,30 @@ function toBigInt(value, fallback) {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+import fs from 'node:fs';
+
+function resolveCacheDir() {
+  const custom = process.env.LOCAL_AUDIO_CACHE_DIR;
+  if (custom) {
+    if (custom.startsWith('/config') && !fs.existsSync('/config')) {
+      return path.resolve('./storage/audio-cache');
+    }
+    return path.resolve(custom);
+  }
+  return path.resolve('./storage/audio-cache');
+}
+
+function resolveCacheIndex() {
+  const custom = process.env.LOCAL_AUDIO_CACHE_INDEX_FILE;
+  if (custom) {
+    if (custom.startsWith('/config') && !fs.existsSync('/config')) {
+      return path.resolve('./storage/audio-cache/index.json');
+    }
+    return path.resolve(custom);
+  }
+  return path.resolve('./storage/audio-cache/index.json');
+}
+
 export const config = {
   discordToken: process.env.DISCORD_TOKEN ?? '',
   clientId: process.env.DISCORD_CLIENT_ID ?? '',
@@ -18,7 +42,7 @@ export const config = {
   ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
   ytDlpPath: process.env.YTDLP_PATH || 'yt-dlp',
   ytDlpCookiesFile: process.env.YTDLP_COOKIES_FILE || '',
-  ytDlpYoutubeArgs: process.env.YTDLP_YOUTUBE_EXTRACTOR_ARGS || 'youtube:player_client=default,mweb',
+  ytDlpYoutubeArgs: process.env.YTDLP_YOUTUBE_EXTRACTOR_ARGS || 'youtube:player_client=android',
   ytDlpPotProviderArgs:
     process.env.YTDLP_POT_PROVIDER_ARGS ||
     'youtubepot-bgutilhttp:base_url=http://bgutil-pot:4416;disable_innertube=1',
@@ -27,8 +51,8 @@ export const config = {
   defaultIdleTimeoutMs: toInt(process.env.DEFAULT_IDLE_TIMEOUT_MS, 3 * 60 * 1000),
   emptyChannelTimeoutMs: toInt(process.env.EMPTY_CHANNEL_TIMEOUT_MS, 3 * 60 * 1000),
   defaultSearchPlatform: process.env.DEFAULT_SEARCH_PLATFORM || 'youtube',
-  audioCacheDir: path.resolve(process.env.LOCAL_AUDIO_CACHE_DIR || './storage/audio-cache'),
-  audioCacheIndexFile: path.resolve(process.env.LOCAL_AUDIO_CACHE_INDEX_FILE || './storage/audio-cache/index.json'),
+  audioCacheDir: resolveCacheDir(),
+  audioCacheIndexFile: resolveCacheIndex(),
   audioCacheMaxTracks: toInt(process.env.LOCAL_AUDIO_CACHE_MAX_TRACKS, 9000),
   audioCacheMaxSizeBytes: toBigInt(process.env.LOCAL_AUDIO_CACHE_MAX_SIZE_BYTES, 30 * 1024 * 1024 * 1024),
   audioCacheBitrateKbps: toInt(process.env.LOCAL_AUDIO_CACHE_BITRATE_KBPS, 128),
