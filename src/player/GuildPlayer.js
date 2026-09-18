@@ -381,6 +381,47 @@ export class GuildPlayer {
     return { type: "offline", tracks };
   }
 
+  async playPlaylist({ member, textChannel, name, tracks }) {
+    const voiceChannel = member?.voice?.channel;
+    if (!voiceChannel) {
+      throw new Error("Kamu harus berada di voice channel terlebih dahulu");
+    }
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+      throw new Error(`Playlist "${name}" tidak memiliki lagu.`);
+    }
+
+    this.lastTextChannelId = textChannel.id;
+    await this.ensureVoice(voiceChannel);
+
+    const requester = { id: member.id, name: member.displayName || member.user?.username || 'User' };
+    const userTracks = tracks.map((track) => ({
+      ...track,
+      requester,
+      addedAt: Date.now(),
+      originalQuery: `Playlist: ${name}`,
+      requestStartedAt: Date.now(),
+    }));
+
+    if (userTracks[0] && !userTracks[0].streamUrl && !userTracks[0].localPath) {
+      try {
+        await this.ytdlp.hydrate(userTracks[0]);
+      } catch (error) {
+        console.warn(`[PLAYLIST:${this.guildId}] first track pre-hydrate failed: ${error.message}`);
+      }
+    }
+
+    this.insertUserTracks(userTracks);
+    void this.publishNowPlaying("queue-update");
+
+    if (!this.current) {
+      void this.queuePlayNext("enqueue-playlist");
+    } else {
+      void this.preloadUpcomingTracks();
+    }
+
+    return { type: "playlist", playlistTitle: name, tracks: userTracks };
+  }
+
   setYoutubeHealthy() {
     this.youtubeStatus = "up";
     this.youtubeFailureReason = null;
@@ -1405,6 +1446,11 @@ export class GuildPlayer {
         new ButtonBuilder()
           .setCustomId("player:lyrics")
           .setLabel("Lyrics")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true),
+        new ButtonBuilder()
+          .setCustomId("player:playlist")
+          .setLabel("Playlist")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
       ),
@@ -2579,6 +2625,10 @@ export class GuildPlayer {
         new ButtonBuilder()
           .setCustomId("player:lyrics")
           .setLabel("🎤 Lyrics")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId("player:playlist")
+          .setLabel("💾 Playlist")
           .setStyle(ButtonStyle.Secondary),
       ),
     ];

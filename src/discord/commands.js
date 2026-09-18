@@ -42,5 +42,65 @@ export const commands = [
   new SlashCommandBuilder().setName('sleep').setDescription('Set sleep timer').addIntegerOption((option) =>
     option.setName('minutes').setDescription('Jumlah menit').setRequired(true)
   ),
-  new SlashCommandBuilder().setName('reconnect').setDescription('Sambung ulang voice connection')
+  new SlashCommandBuilder().setName('reconnect').setDescription('Sambung ulang voice connection'),
+  new SlashCommandBuilder()
+    .setName('playlist')
+    .setDescription('Kelola dan putar playlist pribadi Anda')
+    .addSubcommand((sub) =>
+      sub
+        .setName('create')
+        .setDescription('Buat playlist kosong baru')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist (maks 50 karakter)').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('import')
+        .setDescription('Salin playlist dari YouTube ke playlist baru')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist baru').setRequired(true))
+        .addStringOption((opt) => opt.setName('url').setDescription('URL playlist YouTube').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('add')
+        .setDescription('Tambah satu lagu ke playlist')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist tujuan').setAutocomplete(true).setRequired(true))
+        .addStringOption((opt) => opt.setName('query').setDescription('Judul atau URL lagu').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('add-current')
+        .setDescription('Tambah lagu yang sedang diputar ke playlist')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist tujuan (opsional, ada dropdown)').setAutocomplete(true).setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('play')
+        .setDescription('Putar seluruh lagu dari playlist ke antrean bot')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist (opsional, ada dropdown)').setAutocomplete(true).setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('list')
+        .setDescription('Lihat semua playlist milik Anda di server ini')
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('view')
+        .setDescription('Lihat daftar lagu di dalam playlist')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist (opsional, ada dropdown)').setAutocomplete(true).setRequired(false))
+        .addIntegerOption((opt) => opt.setName('page').setDescription('Nomor halaman').setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('remove')
+        .setDescription('Hapus lagu dari playlist berdasarkan nomor urut')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist (opsional, ada dropdown)').setAutocomplete(true).setRequired(false))
+        .addIntegerOption((opt) => opt.setName('position').setDescription('Nomor urut lagu (opsional, ada dropdown)').setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('delete')
+        .setDescription('Hapus seluruh playlist')
+        .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist (opsional, ada dropdown)').setAutocomplete(true).setRequired(false))
+    )
 ].map((command) => command.toJSON());

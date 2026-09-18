@@ -9,6 +9,7 @@ import {
   MessageFlags,
   REST,
   Routes,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
@@ -18,6 +19,7 @@ import { commands } from './discord/commands.js';
 import { AudioCacheService } from './services/audioCache.js';
 import { LyricsService } from './services/lyrics.js';
 import { YTDlpService } from './services/ytdlp.js';
+import { PlaylistService } from './services/playlistService.js';
 import { PlayerManager } from './player/PlayerManager.js';
 import { formatBytes, formatDuration, isTransientNetworkError, truncate } from './utils/format.js';
 
@@ -29,6 +31,7 @@ const client = new Client({
 
 const ytdlp = new YTDlpService();
 const audioCache = new AudioCacheService();
+const playlists = new PlaylistService();
 const lyrics = new LyricsService();
 const players = new PlayerManager({ client, ytdlp, lyrics, audioCache });
 const AUTO_DELETE_MS = 5000;
@@ -62,7 +65,8 @@ function helpEmbed() {
         '`/cache-list [query]` daftar lagu cache',
         '`/cache-delete <query>` hapus lagu dari cache',
         '`/sleep <minutes>` auto stop',
-        '`/reconnect` sambung ulang voice'
+        '`/reconnect` sambung ulang voice',
+        '`/playlist <subcommand>` kelola & putar playlist pribadi (maks 10 playlist, 50 lagu)'
       ].join('\n')
     );
 }
@@ -369,7 +373,55 @@ async function broadcastNetworkRecovery() {
   }
 }
 
+function buildPlaylistSelectRow(userPlaylists, customId, placeholder = 'Pilih playlist...') {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder(placeholder)
+    .addOptions(
+      userPlaylists.slice(0, 25).map((pl) => ({
+        label: truncate(pl.name, 50),
+        description: `${pl.trackCount}/${config.maxUserPlaylistTracks} lagu (${formatDuration(pl.totalDuration)})`,
+        value: pl.name
+      }))
+    );
+  return new ActionRowBuilder().addComponents(select);
+}
+
+function renderPlaylistViewEmbed(data) {
+  const trackLines = data.tracks.map((t) => `${t.position}. [${truncate(t.title, 55)}](${t.url}) - \`${formatDuration(t.duration)}\``).join('\n');
+  return new EmbedBuilder()
+    .setColor(0x3498db)
+    .setTitle(`Playlist: ${data.playlist.name}`)
+    .setDescription(trackLines)
+    .setFooter({
+      text: `Halaman ${data.currentPage}/${data.totalPages} • Total: ${data.totalTracks}/${config.maxUserPlaylistTracks} lagu (${formatDuration(data.totalDuration)})`
+    });
+}
+
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    try {
+      if (interaction.commandName === 'playlist') {
+        const focused = interaction.options.getFocused(true);
+        if (focused.name === 'name') {
+          const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+          const filterVal = String(focused.value || '').toLowerCase();
+          const filtered = userPlaylists
+            .filter((p) => p.name.toLowerCase().includes(filterVal))
+            .slice(0, 25)
+            .map((p) => ({
+              name: `${truncate(p.name, 50)} (${p.trackCount}/${config.maxUserPlaylistTracks} lagu)`,
+              value: p.name
+            }));
+          await interaction.respond(filtered).catch(() => null);
+        }
+      }
+    } catch {
+      // Autocomplete failures must not crash the bot
+    }
+    return;
+  }
+
   if (interaction.isChatInputCommand()) {
     const player = playerFor(interaction);
 
@@ -552,6 +604,252 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'Voice connection disambungkan ulang.', flags: MessageFlags.Ephemeral });
           scheduleInteractionDelete(interaction);
           break;
+        case 'playlist': {
+          const sub = interaction.options.getSubcommand();
+          switch (sub) {
+            case 'create': {
+              const name = interaction.options.getString('name', true);
+              const pl = playlists.createPlaylist(interaction.guildId, interaction.user.id, name);
+              await interaction.reply({
+                content: `✅ Playlist **${pl.name}** berhasil dibuat. Gunakan \`/playlist add\` untuk menambah lagu.`,
+                flags: MessageFlags.Ephemeral
+              });
+              break;
+            }
+            case 'import': {
+              const name = interaction.options.getString('name', true);
+              const url = interaction.options.getString('url', true);
+              await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+              const resolved = await ytdlp.resolve(url);
+              if (!resolved.tracks || resolved.tracks.length === 0) {
+                await interaction.editReply({ content: '❌ URL YouTube tidak valid atau playlist tidak memiliki lagu.' });
+                break;
+              }
+              const result = playlists.importPlaylist(interaction.guildId, interaction.user.id, name, resolved.tracks);
+              let msg = `✅ Berhasil mengimpor **${result.importedCount} lagu** ke playlist **${result.name}**.`;
+              if (result.totalProvided > result.importedCount) {
+                msg += ` *(Dibatasi hingga ${config.maxUserPlaylistTracks} lagu pertama dari ${result.totalProvided} lagu)*`;
+              }
+              await interaction.editReply({ content: msg });
+              break;
+            }
+            case 'add': {
+              const name = interaction.options.getString('name', true);
+              const query = interaction.options.getString('query', true);
+              await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+              const resolved = await ytdlp.resolve(query);
+              if (!resolved.tracks || resolved.tracks.length === 0) {
+                await interaction.editReply({ content: '❌ Lagu tidak ditemukan.' });
+                break;
+              }
+              const track = resolved.tracks[0];
+              const res = playlists.addTrack(interaction.guildId, interaction.user.id, name, track);
+              await interaction.editReply({
+                content: `✅ Menambahkan **${truncate(track.title, 80)}** ke playlist **${name}** (posisi #${res.position}, total ${res.trackCount}/${config.maxUserPlaylistTracks}).`
+              });
+              break;
+            }
+            case 'add-current': {
+              const name = interaction.options.getString('name');
+              if (!player.current) {
+                await interaction.reply({ content: '❌ Tidak ada lagu yang sedang diputar saat ini.', flags: MessageFlags.Ephemeral });
+                break;
+              }
+              if (!name) {
+                const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+                if (userPlaylists.length === 0) {
+                  await interaction.reply({
+                    content: 'Anda belum memiliki playlist di server ini. Buat dengan `/playlist create <nama>`.',
+                    flags: MessageFlags.Ephemeral
+                  });
+                  break;
+                }
+                await interaction.reply({
+                  content: `Pilih playlist tujuan untuk **${truncate(player.current.title, 80)}**:`,
+                  components: [buildPlaylistSelectRow(userPlaylists, 'playlist:select_save_current', 'Pilih playlist tujuan...')],
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              const res = playlists.addTrack(interaction.guildId, interaction.user.id, name, {
+                title: player.current.title,
+                url: player.current.url || player.current.webpageUrl,
+                uploader: player.current.uploader,
+                duration: player.current.duration,
+                thumbnail: player.current.thumbnail
+              });
+              await interaction.reply({
+                content: `✅ Menambahkan lagu yang sedang diputar **${truncate(player.current.title, 80)}** ke playlist **${name}** (posisi #${res.position}, total ${res.trackCount}/${config.maxUserPlaylistTracks}).`,
+                flags: MessageFlags.Ephemeral
+              });
+              break;
+            }
+            case 'play': {
+              const name = interaction.options.getString('name');
+              if (!name) {
+                const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+                if (userPlaylists.length === 0) {
+                  await interaction.reply({
+                    content: 'Anda belum memiliki playlist di server ini. Buat dengan `/playlist create <nama>` atau `/playlist import <nama> <url>`.',
+                    flags: MessageFlags.Ephemeral
+                  });
+                  break;
+                }
+                await interaction.reply({
+                  content: 'Pilih playlist yang ingin Anda putar:',
+                  components: [buildPlaylistSelectRow(userPlaylists, 'playlist:select_play', 'Pilih playlist untuk diputar...')],
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              await interaction.deferReply();
+              const tracks = playlists.getAllTracks(interaction.guildId, interaction.user.id, name);
+              if (!tracks) {
+                await interaction.editReply({ content: `❌ Playlist **${name}** tidak ditemukan.` });
+                break;
+              }
+              if (tracks.length === 0) {
+                await interaction.editReply({ content: `❌ Playlist **${name}** masih kosong. Tambah lagu dulu dengan \`/playlist add\`.` });
+                break;
+              }
+              const member = await resolveMember(interaction);
+              await player.playPlaylist({ member, textChannel: interaction.channel, name, tracks });
+              await interaction.editReply({
+                content: `▶️ Memutar playlist **${name}** (${tracks.length} lagu) ke antrean.`
+              });
+              break;
+            }
+            case 'list': {
+              const list = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+              if (list.length === 0) {
+                await interaction.reply({
+                  content: 'Anda belum memiliki playlist di server ini. Buat dengan `/playlist create <nama>` atau `/playlist import <nama> <url>`.',
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              const embed = new EmbedBuilder()
+                .setColor(0x3498db)
+                .setTitle(`Playlist Anda di Server Ini (${list.length}/${config.maxUserPlaylists})`)
+                .setDescription(
+                  list.map((pl, idx) => `${idx + 1}. **${pl.name}** — ${pl.trackCount}/${config.maxUserPlaylistTracks} lagu (${formatDuration(pl.totalDuration)})`).join('\n')
+                )
+                .setFooter({ text: 'Putar dengan /playlist play | Detail dengan /playlist view' });
+              await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+              break;
+            }
+            case 'view': {
+              const name = interaction.options.getString('name');
+              const page = interaction.options.getInteger('page') || 1;
+              if (!name) {
+                const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+                if (userPlaylists.length === 0) {
+                  await interaction.reply({
+                    content: 'Anda belum memiliki playlist di server ini. Buat dengan `/playlist create <nama>` atau `/playlist import <nama> <url>`.',
+                    flags: MessageFlags.Ephemeral
+                  });
+                  break;
+                }
+                await interaction.reply({
+                  content: 'Pilih playlist yang ingin Anda lihat:',
+                  components: [buildPlaylistSelectRow(userPlaylists, 'playlist:select_view', 'Pilih playlist untuk dilihat...')],
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              const data = playlists.getPlaylistWithTracks(interaction.guildId, interaction.user.id, name, { page, pageSize: 10 });
+              if (!data) {
+                await interaction.reply({ content: `❌ Playlist **${name}** tidak ditemukan.`, flags: MessageFlags.Ephemeral });
+                break;
+              }
+              if (data.totalTracks === 0) {
+                await interaction.reply({ content: `Playlist **${data.playlist.name}** masih kosong.`, flags: MessageFlags.Ephemeral });
+                break;
+              }
+              await interaction.reply({ embeds: [renderPlaylistViewEmbed(data)], flags: MessageFlags.Ephemeral });
+              break;
+            }
+            case 'remove': {
+              const name = interaction.options.getString('name');
+              const position = interaction.options.getInteger('position');
+              if (!name) {
+                const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+                if (userPlaylists.length === 0) {
+                  await interaction.reply({
+                    content: 'Anda belum memiliki playlist di server ini.',
+                    flags: MessageFlags.Ephemeral
+                  });
+                  break;
+                }
+                await interaction.reply({
+                  content: 'Pilih playlist yang lagunya ingin dihapus:',
+                  components: [buildPlaylistSelectRow(userPlaylists, 'playlist:select_remove_pick_playlist', 'Pilih playlist...')],
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              if (!position) {
+                const tracks = playlists.getAllTracks(interaction.guildId, interaction.user.id, name);
+                if (!tracks) {
+                  await interaction.reply({ content: `❌ Playlist **${name}** tidak ditemukan.`, flags: MessageFlags.Ephemeral });
+                  break;
+                }
+                if (tracks.length === 0) {
+                  await interaction.reply({ content: `Playlist **${name}** masih kosong.`, flags: MessageFlags.Ephemeral });
+                  break;
+                }
+                const select = new StringSelectMenuBuilder()
+                  .setCustomId(`playlist:select_remove_track:${encodeURIComponent(name)}`)
+                  .setPlaceholder('Pilih lagu yang ingin dihapus...')
+                  .addOptions(
+                    tracks.slice(0, 25).map((t) => ({
+                      label: `${t.position}. ${truncate(t.title, 45)}`,
+                      description: `${truncate(t.uploader || 'Unknown', 30)} (${formatDuration(t.duration)})`,
+                      value: String(t.position)
+                    }))
+                  );
+                await interaction.reply({
+                  content: `Pilih lagu dari **${name}** yang ingin dihapus:`,
+                  components: [new ActionRowBuilder().addComponents(select)],
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              const res = playlists.removeTrack(interaction.guildId, interaction.user.id, name, position);
+              await interaction.reply({
+                content: `✅ Lagu **${truncate(res.removedTrack.title, 80)}** dihapus dari playlist **${name}**. Sisa: ${res.remainingCount} lagu.`,
+                flags: MessageFlags.Ephemeral
+              });
+              break;
+            }
+            case 'delete': {
+              const name = interaction.options.getString('name');
+              if (!name) {
+                const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+                if (userPlaylists.length === 0) {
+                  await interaction.reply({
+                    content: 'Anda belum memiliki playlist di server ini.',
+                    flags: MessageFlags.Ephemeral
+                  });
+                  break;
+                }
+                await interaction.reply({
+                  content: 'Pilih playlist yang ingin Anda hapus:',
+                  components: [buildPlaylistSelectRow(userPlaylists, 'playlist:select_delete', 'Pilih playlist yang akan dihapus...')],
+                  flags: MessageFlags.Ephemeral
+                });
+                break;
+              }
+              playlists.deletePlaylist(interaction.guildId, interaction.user.id, name);
+              await interaction.reply({
+                content: `🗑️ Playlist **${name}** berhasil dihapus.`,
+                flags: MessageFlags.Ephemeral
+              });
+              break;
+            }
+          }
+          break;
+        }
       }
     } catch (error) {
       const message = truncate(error.message || 'Unknown error', 1800);
@@ -672,6 +970,37 @@ client.on('interactionCreate', async (interaction) => {
           player.addLyricMessage(msg);
           break;
         }
+        case 'player:playlist': {
+          if (!player.current) {
+            await interaction.reply({ content: 'Tidak ada lagu yang sedang diputar.', flags: MessageFlags.Ephemeral });
+            break;
+          }
+          const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+          if (userPlaylists.length === 0) {
+            await interaction.reply({
+              content: 'Anda belum memiliki playlist di server ini. Buat playlist baru terlebih dahulu dengan `/playlist create <nama>`.',
+              flags: MessageFlags.Ephemeral
+            });
+            break;
+          }
+          const select = new StringSelectMenuBuilder()
+            .setCustomId('playlist:select_save_current')
+            .setPlaceholder('Pilih playlist tujuan...')
+            .addOptions(
+              userPlaylists.map((pl) => ({
+                label: truncate(pl.name, 50),
+                description: `${pl.trackCount}/${config.maxUserPlaylistTracks} lagu (${formatDuration(pl.totalDuration)})`,
+                value: pl.name
+              }))
+            );
+          const row = new ActionRowBuilder().addComponents(select);
+          await interaction.reply({
+            content: `Simpan lagu yang sedang diputar **${truncate(player.current.title, 80)}** ke:`,
+            components: [row],
+            flags: MessageFlags.Ephemeral
+          });
+          break;
+        }
       }
     } catch (error) {
       const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
@@ -719,6 +1048,99 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ content: msg }).catch(() => null);
       } else {
         await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => null);
+      }
+    }
+  }
+
+  if (interaction.isStringSelectMenu()) {
+    try {
+      if (interaction.customId === 'playlist:select_save_current') {
+        const selectedPlaylistName = interaction.values[0];
+        const player = playerFor(interaction);
+        if (!player.current) {
+          await interaction.update({ content: '❌ Tidak ada lagu yang sedang diputar saat ini.', components: [] });
+          return;
+        }
+        const res = playlists.addTrack(interaction.guildId, interaction.user.id, selectedPlaylistName, {
+          title: player.current.title,
+          url: player.current.url || player.current.webpageUrl,
+          uploader: player.current.uploader,
+          duration: player.current.duration,
+          thumbnail: player.current.thumbnail
+        });
+        await interaction.update({
+          content: `✅ Menambahkan **${truncate(player.current.title, 80)}** ke playlist **${selectedPlaylistName}** (posisi #${res.position}, total ${res.trackCount}/${config.maxUserPlaylistTracks}).`,
+          components: []
+        });
+      } else if (interaction.customId === 'playlist:select_play') {
+        const selectedPlaylistName = interaction.values[0];
+        const tracks = playlists.getAllTracks(interaction.guildId, interaction.user.id, selectedPlaylistName);
+        if (!tracks || tracks.length === 0) {
+          await interaction.update({ content: `❌ Playlist **${selectedPlaylistName}** masih kosong atau tidak ditemukan.`, components: [] });
+          return;
+        }
+        const member = await resolveMember(interaction);
+        const player = playerFor(interaction);
+        await interaction.update({ content: `⏳ Memuat playlist **${selectedPlaylistName}** (${tracks.length} lagu)...`, components: [] });
+        await player.playPlaylist({ member, textChannel: interaction.channel, name: selectedPlaylistName, tracks });
+        await interaction.editReply({
+          content: `▶️ Memutar playlist **${selectedPlaylistName}** (${tracks.length} lagu) ke antrean.`
+        });
+      } else if (interaction.customId === 'playlist:select_view') {
+        const selectedPlaylistName = interaction.values[0];
+        const data = playlists.getPlaylistWithTracks(interaction.guildId, interaction.user.id, selectedPlaylistName, { page: 1, pageSize: 10 });
+        if (!data || data.totalTracks === 0) {
+          await interaction.update({ content: `Playlist **${selectedPlaylistName}** masih kosong atau tidak ditemukan.`, components: [] });
+          return;
+        }
+        await interaction.update({
+          content: '',
+          embeds: [renderPlaylistViewEmbed(data)],
+          components: []
+        });
+      } else if (interaction.customId === 'playlist:select_delete') {
+        const selectedPlaylistName = interaction.values[0];
+        playlists.deletePlaylist(interaction.guildId, interaction.user.id, selectedPlaylistName);
+        await interaction.update({
+          content: `🗑️ Playlist **${selectedPlaylistName}** berhasil dihapus.`,
+          components: []
+        });
+      } else if (interaction.customId === 'playlist:select_remove_pick_playlist') {
+        const selectedPlaylistName = interaction.values[0];
+        const tracks = playlists.getAllTracks(interaction.guildId, interaction.user.id, selectedPlaylistName);
+        if (!tracks || tracks.length === 0) {
+          await interaction.update({ content: `Playlist **${selectedPlaylistName}** masih kosong.`, components: [] });
+          return;
+        }
+        const select = new StringSelectMenuBuilder()
+          .setCustomId(`playlist:select_remove_track:${encodeURIComponent(selectedPlaylistName)}`)
+          .setPlaceholder('Pilih lagu yang ingin dihapus...')
+          .addOptions(
+            tracks.slice(0, 25).map((t) => ({
+              label: `${t.position}. ${truncate(t.title, 45)}`,
+              description: `${truncate(t.uploader || 'Unknown', 30)} (${formatDuration(t.duration)})`,
+              value: String(t.position)
+            }))
+          );
+        await interaction.update({
+          content: `Pilih lagu dari **${selectedPlaylistName}** yang ingin dihapus:`,
+          components: [new ActionRowBuilder().addComponents(select)]
+        });
+      } else if (interaction.customId.startsWith('playlist:select_remove_track:')) {
+        const playlistName = decodeURIComponent(interaction.customId.slice('playlist:select_remove_track:'.length));
+        const position = Number(interaction.values[0]);
+        const res = playlists.removeTrack(interaction.guildId, interaction.user.id, playlistName, position);
+        await interaction.update({
+          content: `✅ Lagu **${truncate(res.removedTrack.title, 80)}** dihapus dari playlist **${playlistName}**. Sisa: ${res.remainingCount} lagu.`,
+          components: []
+        });
+      }
+    } catch (error) {
+      const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg, components: [] }).catch(() => null);
+      } else {
+        await interaction.update({ content: msg, components: [] }).catch(() => null);
       }
     }
   }

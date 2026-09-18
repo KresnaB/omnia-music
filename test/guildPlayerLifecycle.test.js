@@ -238,3 +238,87 @@ test('GuildPlayer killCurrentProcesses resets currentProcess and currentSourcePr
   assert.equal(context.currentSourceProcess, null);
   assert.deepEqual(killed, ['source.SIGKILL', 'ffmpeg.SIGKILL']);
 });
+
+test('GuildPlayer buildControlRows and buildDisabledControlRows include playlist button', () => {
+  const context = createPlayerContext({
+    player: { state: { status: 'playing' } },
+    shuffleActive: false,
+    autoplay: false,
+    loopMode: 'off'
+  });
+
+  const activeRows = GuildPlayer.prototype.buildControlRows.call(context);
+  assert.equal(activeRows.length, 2);
+  const activeButtons = activeRows.flatMap((r) => r.components);
+  const playlistActive = activeButtons.find((b) => b.data?.custom_id === 'player:playlist');
+  assert.ok(playlistActive, 'Active control rows must include player:playlist button');
+  assert.equal(playlistActive.data.label, '💾 Playlist');
+  assert.equal(Boolean(playlistActive.data.disabled), false);
+
+  const disabledRows = GuildPlayer.prototype.buildDisabledControlRows.call(context);
+  assert.equal(disabledRows.length, 2);
+  const disabledButtons = disabledRows.flatMap((r) => r.components);
+  const playlistDisabled = disabledButtons.find((b) => b.data?.custom_id === 'player:playlist');
+  assert.ok(playlistDisabled, 'Disabled control rows must include player:playlist button');
+  assert.equal(playlistDisabled.data.label, 'Playlist');
+  assert.equal(playlistDisabled.data.disabled, true);
+});
+
+test('GuildPlayer playPlaylist validates voice channel and track list', async () => {
+  const context = createPlayerContext();
+
+  await assert.rejects(
+    () => GuildPlayer.prototype.playPlaylist.call(context, { member: {}, textChannel: { id: 'tc-1' }, name: 'Rock', tracks: [{ id: '1' }] }),
+    /Kamu harus berada di voice channel terlebih dahulu/
+  );
+
+  await assert.rejects(
+    () => GuildPlayer.prototype.playPlaylist.call(context, {
+      member: { voice: { channel: { id: 'vc-1' } } },
+      textChannel: { id: 'tc-1' },
+      name: 'Empty',
+      tracks: []
+    }),
+    /tidak memiliki lagu/
+  );
+});
+
+test('GuildPlayer playPlaylist connects voice, enqueues tracks, and starts playback when idle', async () => {
+  let voiceEnsured = false;
+  let playNextCalled = false;
+  let inserted = [];
+
+  const context = createPlayerContext({
+    ensureVoice: async (vc) => { voiceEnsured = vc.id === 'vc-1'; },
+    insertUserTracks: (tracks) => { inserted = tracks; },
+    queuePlayNext: (reason) => { playNextCalled = reason === 'enqueue-playlist'; },
+    ytdlp: { hydrate: async () => {} }
+  });
+
+  const member = {
+    id: 'user-1',
+    displayName: 'TestUser',
+    voice: { channel: { id: 'vc-1' } }
+  };
+  const textChannel = { id: 'tc-1' };
+  const rawTracks = [
+    { id: 'track-1', title: 'Song 1', duration: 180, url: 'https://youtu.be/1' },
+    { id: 'track-2', title: 'Song 2', duration: 200, url: 'https://youtu.be/2' }
+  ];
+
+  const res = await GuildPlayer.prototype.playPlaylist.call(context, {
+    member,
+    textChannel,
+    name: 'My Mix',
+    tracks: rawTracks
+  });
+
+  assert.equal(voiceEnsured, true);
+  assert.equal(playNextCalled, true);
+  assert.equal(context.lastTextChannelId, 'tc-1');
+  assert.equal(res.type, 'playlist');
+  assert.equal(res.playlistTitle, 'My Mix');
+  assert.equal(inserted.length, 2);
+  assert.equal(inserted[0].requester.name, 'TestUser');
+  assert.equal(inserted[0].originalQuery, 'Playlist: My Mix');
+});

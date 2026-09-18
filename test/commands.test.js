@@ -51,7 +51,8 @@ test('commands includes all critical music bot commands', () => {
     'cache-list',
     'cache-delete',
     'sleep',
-    'reconnect'
+    'reconnect',
+    'playlist'
   ];
 
   const map = new Map(commands.map((cmd) => [cmd.name, cmd]));
@@ -73,4 +74,30 @@ test('commands includes all critical music bot commands', () => {
   assert.equal(modeOpt.required, true);
   const choiceValues = modeOpt.choices?.map((c) => c.value);
   assert.deepEqual(choiceValues, ['off', 'track', 'queue']);
+
+  // Verify playlist subcommands
+  const plCmd = map.get('playlist');
+  assert.ok(plCmd, 'playlist command must exist');
+  assert.ok(Array.isArray(plCmd.options), 'playlist options must be array of subcommands');
+  
+  const subNames = plCmd.options.map((s) => s.name);
+  const expectedSubs = ['create', 'import', 'add', 'add-current', 'play', 'list', 'view', 'remove', 'delete'];
+  for (const sub of expectedSubs) {
+    assert.ok(subNames.includes(sub), `playlist must have subcommand '${sub}'`);
+  }
+
+  const subMap = new Map(plCmd.options.map((s) => [s.name, s]));
+  assert.equal(subMap.get('create').options?.find((o) => o.name === 'name')?.required, true);
+  assert.equal(subMap.get('import').options?.find((o) => o.name === 'url')?.required, true);
+  assert.equal(subMap.get('add').options?.find((o) => o.name === 'query')?.required, true);
+  assert.equal(subMap.get('add').options?.find((o) => o.name === 'name')?.autocomplete, true);
+  assert.equal(subMap.get('add-current').options?.find((o) => o.name === 'name')?.required, false);
+  assert.equal(subMap.get('add-current').options?.find((o) => o.name === 'name')?.autocomplete, true);
+  assert.equal(subMap.get('play').options?.find((o) => o.name === 'name')?.required, false);
+  assert.equal(subMap.get('play').options?.find((o) => o.name === 'name')?.autocomplete, true);
+  assert.equal(subMap.get('remove').options?.find((o) => o.name === 'name')?.autocomplete, true);
+  assert.equal(subMap.get('delete').options?.find((o) => o.name === 'name')?.required, false);
+  assert.equal(subMap.get('delete').options?.find((o) => o.name === 'name')?.autocomplete, true);
+  assert.equal(subMap.get('view').options?.find((o) => o.name === 'name')?.autocomplete, true);
+  assert.equal(subMap.get('view').options?.find((o) => o.name === 'page')?.required, false);
 });

@@ -2,7 +2,7 @@ services:
   omnia-bot:
     build:
       context: .
-      dockerfile: bot.Dockerfile
+      dockerfile: Dockerfile
     image: omnia-bot:local
     container_name: omnia-bot
     restart: unless-stopped
@@ -10,4 +10,5 @@ services:
       - .env
     volumes:
       - ./storage/audio-cache:/config/audio-cache
+      - ./storage:/app/storage
       - ./cookies.txt:/config/cookies.txt

@@ -1,40 +1,35 @@
-# Stage 1: Build frontend
-FROM node:20-alpine AS frontend
-WORKDIR /app/web
-COPY web/package.json web/package-lock.json* ./
-RUN npm ci --production=false
-COPY web/ .
-RUN npm run build
+# Dockerfile for Omnia Music Discord bot (Node.js)
+FROM node:24-bookworm-slim
 
-# Stage 2: Build Go backend
-FROM golang:1.25-alpine AS backend
-RUN apk add --no-cache gcc musl-dev
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY server/ ./server/
-COPY --from=frontend /app/web/dist ./web/dist
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /app/server ./server/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    ffmpeg \
+    python3 \
+    unzip \
+  && curl -L https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp -o /usr/local/bin/yt-dlp \
+  && chmod a+rx /usr/local/bin/yt-dlp \
+  && curl -fsSL https://deno.land/install.sh | sh \
+  && ln -sf /root/.deno/bin/deno /usr/local/bin/deno \
+  && mkdir -p /root/yt-dlp-plugins \
+  && curl -L https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip -o /tmp/bgutil-pot.zip \
+  && unzip /tmp/bgutil-pot.zip -d /root/yt-dlp-plugins \
+  && rm -f /tmp/bgutil-pot.zip \
+  && rm -rf /var/lib/apt/lists/*
 
-# Stage 3: Runtime
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
-COPY --from=backend /app/server .
-COPY --from=backend /app/web/dist ./web/dist
+COPY package.json package-lock.json /app/
+RUN npm ci --omit=dev
 
-# Create data directory for SQLite
-RUN mkdir -p /app/data
+COPY src /app/src
+COPY .env.example /app/.env.example
 
-ENV PORT=3000
-ENV DB_PATH=/app/data/omnia.db
-ENV AUDIO_PATH=/music
-ENV INDEX_PATH=/music/index.json
-ENV JWT_SECRET=change-this-in-production
+RUN mkdir -p /app/config && mkdir -p /root/.yt-dlp && cp -r /root/yt-dlp-plugins /root/.yt-dlp/plugins
 
-EXPOSE 3000
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV YTDLP_PATH=/usr/local/bin/yt-dlp
+ENV HOME=/root
+ENV PYTHONPATH=/root/yt-dlp-plugins
 
-VOLUME ["/music", "/app/data"]
-
-CMD ["./server"]
+CMD ["node", "src/index.js"]

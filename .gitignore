@@ -7,7 +7,5 @@ storage/
 cookies.txt
 data/
 .hermes/
-server/server
-web/dist/
 *.bak
 .env.bot

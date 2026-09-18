@@ -35,7 +35,21 @@ function resolveCacheIndex() {
   return path.resolve('./storage/audio-cache/index.json');
 }
 
+function resolvePlaylistDb() {
+  const custom = process.env.PLAYLIST_DB_PATH;
+  if (custom) {
+    if (custom.startsWith('/config') && !fs.existsSync('/config')) {
+      return path.resolve('./storage/playlists.db');
+    }
+    return path.resolve(custom);
+  }
+  return path.resolve('./storage/playlists.db');
+}
+
 export const config = {
+  playlistDbPath: resolvePlaylistDb(),
+  maxUserPlaylists: toInt(process.env.MAX_USER_PLAYLISTS, 10),
+  maxUserPlaylistTracks: toInt(process.env.MAX_USER_PLAYLIST_TRACKS, 50),
   discordToken: process.env.DISCORD_TOKEN ?? '',
   clientId: process.env.DISCORD_CLIENT_ID ?? '',
   devGuildId: process.env.DEV_GUILD_ID ?? '',
