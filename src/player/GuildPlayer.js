@@ -1408,49 +1408,49 @@ export class GuildPlayer {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("player:toggle")
-          .setLabel("Pause")
+          .setEmoji("⏸️")
           .setStyle(ButtonStyle.Primary)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:skip")
-          .setLabel("Skip")
+          .setEmoji("⏭️")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:stop")
-          .setLabel("Stop")
+          .setEmoji("⏹️")
           .setStyle(ButtonStyle.Danger)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:shuffle")
-          .setLabel("Shuffle")
+          .setEmoji("🔀")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("player:autoplay")
-          .setLabel("Autoplay")
+          .setEmoji("✨")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:loop")
-          .setLabel("Loop")
+          .setEmoji("🔁")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:queue")
-          .setLabel("Queue")
+          .setEmoji("📋")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:lyrics")
-          .setLabel("Lyrics")
+          .setEmoji("🎤")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
         new ButtonBuilder()
           .setCustomId("player:playlist")
-          .setLabel("Playlist")
+          .setEmoji("💾")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
       ),
@@ -1482,7 +1482,8 @@ export class GuildPlayer {
             "",
             `Bot akan disconnect otomatis dalam <t:${nowUnixPlus(Math.floor(config.emptyChannelTimeoutMs / 1000))}:R> jika belum ada lagu lagi.`,
           ].join("\n"),
-        );
+        )
+        .setFooter({ text: "Powered by Kubiku Technology" });
       const components = this.buildDisabledControlRows();
 
       if (this.currentMessage) {
@@ -2553,6 +2554,7 @@ export class GuildPlayer {
 
   buildNowPlayingEmbed() {
     const status = this.status();
+    const requester = this.current.requester?.name || "Unknown";
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setAuthor({ name: "Now Playing" })
@@ -2561,16 +2563,11 @@ export class GuildPlayer {
         [
           `👤 **Uploader:** ${truncate(this.current.uploader || "Unknown", 50)}`,
           `⏱️ **Duration:** \`${formatDuration(this.current.duration)}\``,
-          `💾 **Source:** \`${this.current.localPath ? "local-cache" : "stream"}\``,
-          `🎚️ **Mode:** \`${status.offlineMode ? "offline-cache-only" : "normal"}\``,
-          `📦 **Cache:** ${this.getTrackCacheStatusLabel(this.current)}`,
-          "",
-          `YouTube: ${this.getYoutubeStatusLabel()}`,
-          `**Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? "On" : "Off"}\` | Queue \`${this.queue.length}\``,
+          `⚙️ **Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? "On" : "Off"}\` | Queue \`${this.queue.length}\``,
         ].join("\n"),
       )
       .setFooter({
-        text: `Requested by ${this.current.requester?.name || "Unknown"}`,
+        text: `Powered by Kubiku Technology • Requested by ${requester}`,
       });
 
     if (this.current.webpageUrl) embed.setURL(this.current.webpageUrl);
@@ -2586,19 +2583,19 @@ export class GuildPlayer {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("player:toggle")
-          .setLabel(isPaused ? "▶️ Resume" : "⏸️ Pause")
+          .setEmoji(isPaused ? "▶️" : "⏸️")
           .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId("player:skip")
-          .setLabel("⏭️ Skip")
+          .setEmoji("⏭️")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId("player:stop")
-          .setLabel("⏹️ Stop")
+          .setEmoji("⏹️")
           .setStyle(ButtonStyle.Danger),
         new ButtonBuilder()
           .setCustomId("player:shuffle")
-          .setLabel("🔀 Shuffle")
+          .setEmoji("🔀")
           .setStyle(
             this.shuffleActive ? ButtonStyle.Success : ButtonStyle.Secondary,
           ),
@@ -2606,13 +2603,13 @@ export class GuildPlayer {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("player:autoplay")
-          .setLabel("✨ Autoplay")
+          .setEmoji("✨")
           .setStyle(
             this.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary,
           ),
         new ButtonBuilder()
           .setCustomId("player:loop")
-          .setLabel(`🔁 Loop ${this.loopMode !== "off" ? this.loopMode : ""}`)
+          .setEmoji(this.loopMode === "track" ? "🔂" : "🔁")
           .setStyle(
             this.loopMode !== "off"
               ? ButtonStyle.Success
@@ -2620,15 +2617,15 @@ export class GuildPlayer {
           ),
         new ButtonBuilder()
           .setCustomId("player:queue")
-          .setLabel("📋 Queue")
+          .setEmoji("📋")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId("player:lyrics")
-          .setLabel("🎤 Lyrics")
+          .setEmoji("🎤")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId("player:playlist")
-          .setLabel("💾 Playlist")
+          .setEmoji("💾")
           .setStyle(ButtonStyle.Secondary),
       ),
     ];

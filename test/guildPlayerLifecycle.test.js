@@ -252,16 +252,60 @@ test('GuildPlayer buildControlRows and buildDisabledControlRows include playlist
   const activeButtons = activeRows.flatMap((r) => r.components);
   const playlistActive = activeButtons.find((b) => b.data?.custom_id === 'player:playlist');
   assert.ok(playlistActive, 'Active control rows must include player:playlist button');
-  assert.equal(playlistActive.data.label, '💾 Playlist');
+  assert.equal(playlistActive.data.emoji?.name, '💾');
+  assert.equal(playlistActive.data.label, undefined);
   assert.equal(Boolean(playlistActive.data.disabled), false);
+
+  for (const btn of activeButtons) {
+    assert.ok(btn.data.emoji?.name, `Active button ${btn.data.custom_id} must have an emoji`);
+    assert.equal(btn.data.label, undefined, `Active button ${btn.data.custom_id} must not have text label`);
+  }
 
   const disabledRows = GuildPlayer.prototype.buildDisabledControlRows.call(context);
   assert.equal(disabledRows.length, 2);
   const disabledButtons = disabledRows.flatMap((r) => r.components);
   const playlistDisabled = disabledButtons.find((b) => b.data?.custom_id === 'player:playlist');
   assert.ok(playlistDisabled, 'Disabled control rows must include player:playlist button');
-  assert.equal(playlistDisabled.data.label, 'Playlist');
+  assert.equal(playlistDisabled.data.emoji?.name, '💾');
+  assert.equal(playlistDisabled.data.label, undefined);
   assert.equal(playlistDisabled.data.disabled, true);
+
+  for (const btn of disabledButtons) {
+    assert.ok(btn.data.emoji?.name, `Disabled button ${btn.data.custom_id} must have an emoji`);
+    assert.equal(btn.data.label, undefined, `Disabled button ${btn.data.custom_id} must not have text label`);
+  }
+});
+
+test('GuildPlayer buildNowPlayingEmbed is simplified, has no cache details, and includes Kubiku footer', () => {
+  const context = createPlayerContext({
+    current: {
+      title: 'Test Song',
+      uploader: 'Test Artist',
+      duration: 215,
+      requester: { id: 'u1', name: 'JohnDoe' },
+      webpageUrl: 'https://youtube.com/watch?v=123',
+      thumbnail: 'https://img.youtube.com/vi/123/default.jpg'
+    },
+    queue: [{ title: 'Next Song' }],
+    loopMode: 'off',
+    autoplay: true,
+    status: () => ({
+      loopMode: 'off',
+      autoplay: true,
+      offlineMode: false
+    })
+  });
+
+  const embed = GuildPlayer.prototype.buildNowPlayingEmbed.call(context);
+  assert.equal(embed.data.title, 'Test Song');
+  assert.ok(embed.data.footer.text.includes('Powered by Kubiku Technology'));
+  assert.ok(embed.data.footer.text.includes('Requested by JohnDoe'));
+  assert.ok(!embed.data.description.includes('Source:'));
+  assert.ok(!embed.data.description.includes('Mode:'));
+  assert.ok(!embed.data.description.includes('Cache:'));
+  assert.ok(!embed.data.description.includes('YouTube:'));
+  assert.ok(embed.data.description.includes('**Uploader:** Test Artist'));
+  assert.ok(embed.data.description.includes('**Duration:** `03:35`'));
 });
 
 test('GuildPlayer playPlaylist validates voice channel and track list', async () => {

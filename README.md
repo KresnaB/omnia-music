@@ -1,29 +1,41 @@
 # Omnia Music
 
-Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, siap untuk voice stack modern yang mendukung DAVE.
+Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, siap untuk voice stack modern yang mendukung Discord DAVE (E2EE voice protocol).
 
 ## Fitur
 
-- Slash command: `/play`, `/skip`, `/stop`, `/seek`, `/queue`, `/loop`, `/shuffle`, `/autoplay`, `/help`, `/move`, `/status`, `/lyrics`, `/sleep`, `/reconnect`
-- Mode cache-only per sesi melalui `/offlinemode <nama lagu atau artis>`, dan `/normalmode` untuk kembali ke mode normal
-- Embed now playing dengan tombol play/pause, skip, stop, shuffle, autoplay, loop, queue, dan lyrics
-- Playlist URL otomatis dimasukkan ke queue dengan batas maksimum 100 lagu pertama
-- Link `music.youtube.com` akan dinormalisasi otomatis ke URL YouTube standar sebelum di-resolve
-- Preprocessing tetap 1 lagu berikutnya di background agar transisi lebih cepat tanpa membebani server
-- Link single video diprioritaskan lewat jalur cepat direct stream URL, metadata menyusul di background
-- First play memakai deferred interaction agar tidak timeout saat resolve awal
-- Lyrics dari LRCLIB
-- `yt-dlp` + POT provider `bgutil-pot`
-- Docker deployment
+- **Modern & Clean Discord Player**:
+  - Embed player yang rapi dan ringkas (menampilkan Judul, Uploader, Durasi, dan status Settings).
+  - Footer terintegrasi: `Powered by Kubiku Technology • Requested by <User>`.
+  - Kontrol interaktif emoji-only (tanpa label teks panjang):
+    - Baris 1: `▶️`/`⏸️` (Play/Pause), `⏭️` (Skip), `⏹️` (Stop), `🔀` (Shuffle)
+    - Baris 2: `✨` (Autoplay), `🔁`/`🔂` (Loop Mode), `📋` (Queue), `🎤` (Lyrics), `💾` (Simpan ke Playlist)
+- **Slash Commands Lengkap**:
+  - **Playback**: `/play`, `/skip`, `/stop`, `/seek`, `/queue`, `/loop`, `/shuffle`, `/autoplay`, `/move`
+  - **Playlist Pribadi (SQLite)**: `/playlist <create|import|add|add-current|play|list|view|remove|delete>`
+  - **Offline & Cache**: `/offlinemode`, `/normalmode`, `/cache-stats`, `/cache-list`, `/cache-delete`
+  - **Utility**: `/lyrics`, `/status`, `/sleep`, `/reconnect`, `/help`
+- **Manajemen Playlist Kustom**:
+  - Simpan lagu favorit ke playlist server pribadi menggunakan database SQLite bawaan (`node:sqlite`).
+  - Impor playlist langsung dari link YouTube.
+  - Tambah lagu saat ini langsung lewat tombol player (`💾`) atau command `/playlist add-current`.
+- **Audio Pipeline Cepat & Andal**:
+  - Preprocessing 1 lagu berikutnya di background agar transisi lagu instan tanpa jeda buffering.
+  - Fallback otomatis ke audio cache lokal saat YouTube/jaringan mengalami gangguan.
+  - Pembersihan link otomatis: normalisasi URL `music.youtube.com` ke YouTube standar.
+  - Direct stream URL cepat untuk video tunggal; metadata dimuat di background.
+- **Lirik Lagu**: Mengambil synced / plain lyrics secara otomatis via LRCLIB.
+- **Bypass & Anti-Bot**: Integrasi `yt-dlp` dengan POT provider `bgutil-pot`.
+- **Docker Deployment**: Siap dijalankan dengan Docker & Docker Compose.
 
 ## Stack
 
 - Node.js 24
-- `discord.js`
-- `@discordjs/voice`
-- `yt-dlp`
-- `ffmpeg`
-- `bgutil-pot`
+- `discord.js` v14
+- `@discordjs/voice` + `@snazzah/davey` (DAVE voice support)
+- `node:sqlite` (penyimpanan playlist lokal)
+- `yt-dlp` + `ffmpeg`
+- `bgutil-pot` (POT token provider)
 
 ## Setup Discord Developer Portal
 
@@ -59,6 +71,12 @@ npm install
 npm start
 ```
 
+Jalankan pengujian:
+
+```bash
+npm test
+```
+
 ## Setup Docker
 
 Struktur folder:
@@ -74,16 +92,15 @@ Struktur folder:
 
 Catatan:
 - `config/cookies.txt` di host akan dipasang sebagai `/app/config/cookies.txt` di container
-- `storage/` di host akan dipasang sebagai `/app/storage` agar cache lagu tetap tersimpan saat container di-build ulang
-- cookies opsional, jadi `YTDLP_COOKIES_FILE` boleh dikosongkan
+- `storage/` di host akan dipasang sebagai `/app/storage` agar database playlist dan cache lagu tetap tersimpan saat container di-build ulang
+- Cookies opsional, jadi `YTDLP_COOKIES_FILE` boleh dikosongkan
 
 Jalankan:
 
 ```bash
 docker compose up --build -d
 docker compose ps
-docker compose logs -f omnia-music
-docker compose logs -f bgutil-pot
+docker compose logs -f omnia-bot
 ```
 
 ## Environment
@@ -113,23 +130,23 @@ YTDLP_COOKIES_FILE=
 
 ## Cara Kerja Queue dan Preload
 
-- Jika user paste playlist URL, bot hanya mengambil 100 lagu pertama
-- Saat satu lagu mulai diputar, bot langsung menyiapkan metadata/stream URL lagu berikutnya dari queue
-- Jika queue kosong tetapi autoplay aktif, bot juga menyiapkan kandidat autoplay berikutnya di background sebelum lagu saat ini selesai
-- Tujuannya agar pindah ke lagu selanjutnya lebih cepat dan first play tidak terasa terlalu lama
+- Jika user paste playlist URL, bot mengambil hingga 100 lagu pertama ke dalam antrean.
+- Saat lagu mulai diputar, bot langsung menyiapkan metadata dan stream URL lagu berikutnya dari queue di background.
+- Jika queue kosong tetapi autoplay aktif, bot otomatis menyiapkan kandidat lagu autoplay di background sebelum lagu selesai.
+- Transisi antar lagu berjalan mulus tanpa jeda buffering panjang.
 
 ## Troubleshooting
 
 Tes `yt-dlp` di dalam container:
 
 ```bash
-docker compose exec omnia-music yt-dlp --extractor-args "youtube:player_client=default,mweb" --extractor-args "youtubepot-bgutilhttp:base_url=http://bgutil-pot:4416;disable_innertube=1" --no-playlist --default-search youtube --dump-single-json "ytsearch1:alan walker faded"
+docker compose exec omnia-bot yt-dlp --extractor-args "youtube:player_client=default,mweb" --extractor-args "youtubepot-bgutilhttp:base_url=http://bgutil-pot:4416;disable_innertube=1" --no-playlist --default-search youtube --dump-single-json "ytsearch1:alan walker faded"
 ```
 
 Cek runtime JavaScript untuk challenge solver:
 
 ```bash
-docker compose exec omnia-music deno --version
+docker compose exec omnia-bot deno --version
 ```
 
 Cek service provider:
@@ -138,7 +155,7 @@ Cek service provider:
 docker compose logs --tail=100 bgutil-pot
 ```
 
-Log server juga akan menulis timing proses per lagu dengan format seperti:
+Log server juga akan menulis timing proses per lagu dengan format:
 
 ```text
 [timing:GUILD_ID] "judul lagu" request_to_playing=2400ms queue_wait=120ms hydrate=300ms pipeline=850ms
@@ -146,5 +163,5 @@ Log server juga akan menulis timing proses per lagu dengan format seperti:
 
 ## Catatan
 
-- Spotify tidak di-stream langsung dari Spotify karena DRM. Untuk URL Spotify, praktik paling aman tetap mencocokkan metadata lalu memutar hasil resolusi sumber yang didukung `yt-dlp`
-- Command didaftarkan ke `DEV_GUILD_ID` agar propagasi slash command lebih cepat saat development
+- Spotify tidak di-stream langsung dari Spotify karena DRM. Untuk URL Spotify, bot mencocokkan metadata lalu memutar hasil resolusi sumber yang didukung `yt-dlp`.
+- Command didaftarkan ke `DEV_GUILD_ID` saat development agar pembaruan slash command langsung aktif tanpa menunggu cache global Discord.
