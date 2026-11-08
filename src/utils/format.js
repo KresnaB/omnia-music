@@ -17,6 +17,22 @@ export function truncate(value, max) {
   return `${value.slice(0, max - 3)}...`;
 }
 
+// Buang embel-embel seperti "(Official Music Video)" / "[Lyrics]" khusus untuk tampilan.
+const TITLE_NOISE = /\s*[([][^)\]]*\b(official|music video|lyrics?|audio|visuali[sz]er|mv|hd|4k)\b[^)\]]*[)\]]/gi;
+
+export function displayTitle(title) {
+  const cleaned = String(title || '').replace(TITLE_NOISE, '').trim();
+  return cleaned || String(title || '');
+}
+
+export function progressBar(elapsed, total, size = 14) {
+  if (!total) return `\`${formatDuration(elapsed)}\` • LIVE`;
+  const ratio = Math.min(1, Math.max(0, elapsed / total));
+  const pos = Math.min(size - 1, Math.floor(ratio * size));
+  const bar = '▬'.repeat(pos) + '🔘' + '▬'.repeat(size - pos - 1);
+  return `\`${formatDuration(elapsed)}\` ${bar} \`${formatDuration(total)}\``;
+}
+
 export function nowUnixPlus(ms) {
   return Math.floor((Date.now() + ms) / 1000);
 }

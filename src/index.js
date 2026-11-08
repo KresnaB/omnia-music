@@ -7,6 +7,7 @@ import {
   GatewayIntentBits,
   ModalBuilder,
   MessageFlags,
+  PermissionFlagsBits,
   REST,
   Routes,
   StringSelectMenuBuilder,
@@ -21,7 +22,7 @@ import { LyricsService } from './services/lyrics.js';
 import { YTDlpService } from './services/ytdlp.js';
 import { PlaylistService } from './services/playlistService.js';
 import { PlayerManager } from './player/PlayerManager.js';
-import { formatBytes, formatDuration, isTransientNetworkError, truncate } from './utils/format.js';
+import { displayTitle, formatBytes, formatDuration, isTransientNetworkError, truncate } from './utils/format.js';
 
 validateConfig();
 
@@ -43,41 +44,46 @@ let networkOutageDetected = false;
 const cacheListSessions = new Map();
 
 function helpEmbed() {
+  const section = (lines) => lines.join('\n');
   return new EmbedBuilder()
-    .setColor(0x95a5a6)
-    .setTitle('Omnia Music Help')
-    .setDescription(
-      [
-        '`/play <query>` putar lagu atau playlist',
-        '`/offlinemode <query>` putar semua cache yang cocok tanpa YouTube',
-        '`/normalmode` paksa kembali ke mode normal',
-        '`/skip` lewati lagu sekarang',
-        '`/previous` putar kembali lagu sebelumnya',
-        '`/pause` jeda playback musik',
-        '`/resume` lanjutkan playback musik',
-        '`/stop` stop dan disconnect',
-        '`/replay` putar ulang lagu saat ini dari awal',
-        '`/seek <seconds>` lompat ke posisi tertentu',
-        '`/skipto <posisi>` lompat ke nomor urut antrean tertentu',
-        '`/nowplaying` lihat info lagu yang sedang diputar',
-        '`/queue` lihat queue aktif',
-        '`/clear` kosongkan antrean lagu',
-        '`/remove <posisi>` hapus lagu dari antrean',
-        '`/history` lihat riwayat lagu yang baru diputar',
-        '`/loop <off|track|queue>` atur loop mode',
-        '`/shuffle` acak queue',
-        '`/autoplay` toggle autoplay',
-        '`/move <from> <to>` pindah antrean',
-        '`/status` lihat status player',
-        '`/lyrics` ambil lirik saat ini',
-        '`/cache-stats` statistik cache lokal',
-        '`/cache-list [query]` daftar lagu cache',
-        '`/cache-delete <query>` hapus lagu dari cache',
-        '`/sleep <minutes>` auto stop',
-        '`/reconnect` sambung ulang voice',
-        '`/playlist <subcommand>` kelola & putar playlist pribadi (maks 10 playlist, 50 lagu)'
-      ].join('\n')
-    );
+    .setColor(0x5865f2)
+    .setTitle('🎵 Omnia Music — Daftar Perintah')
+    .setDescription('Kontrol cepat tersedia lewat tombol di panel **Now Playing**.')
+    .addFields(
+      {
+        name: '▶️ Pemutaran',
+        value: section([
+          '`/play <judul/URL>` putar lagu atau playlist',
+          '`/pause` `/resume` jeda / lanjutkan',
+          '`/skip` `/previous` lagu berikutnya / sebelumnya',
+          '`/replay` ulang dari awal • `/seek <detik>` lompat posisi',
+          '`/stop` hentikan & keluar voice',
+          '`/nowplaying` info lagu + progres • `/lyrics` lirik'
+        ])
+      },
+      {
+        name: '📋 Antrean',
+        value: section([
+          '`/queue` lihat antrean • `/history` riwayat',
+          '`/skipto <no>` `/remove <no>` `/move <dari> <ke>`',
+          '`/shuffle` acak • `/clear` kosongkan',
+          '`/loop <off|track|queue>` • `/autoplay` lagu otomatis'
+        ])
+      },
+      {
+        name: '📁 Playlist Pribadi',
+        value: `\`/playlist create|add|add-current|import|play|view|remove|delete|list\`\nMaks ${config.maxUserPlaylists} playlist, ${config.maxUserPlaylistTracks} lagu per playlist.`
+      },
+      {
+        name: '💾 Cache & Lainnya',
+        value: section([
+          '`/offlinemode <query>` putar dari cache saja • `/normalmode` kembali normal',
+          '`/cache-stats` `/cache-list` `/cache-delete`',
+          '`/sleep <menit>` timer berhenti • `/reconnect` sambung ulang voice • `/status`'
+        ])
+      }
+    )
+    .setFooter({ text: 'Powered by Kubiku Technology' });
 }
 
 async function registerCommands() {
@@ -165,6 +171,79 @@ function registerRuntimeHandlers() {
 
 function playerFor(interaction) {
   return players.get(interaction.guildId);
+}
+
+// Kontrol yang mengubah playback hanya boleh dipakai oleh orang yang sedang
+// berada di voice channel yang sama dengan bot.
+const VOICE_CONTROL_COMMANDS = new Set([
+  'skip', 'previous', 'pause', 'resume', 'stop', 'replay', 'seek', 'skipto',
+  'clear', 'remove', 'loop', 'shuffle', 'autoplay', 'move', 'sleep', 'normalmode'
+]);
+const VOICE_CONTROL_BUTTONS = new Set([
+  'player:toggle', 'player:skip', 'player:stop', 'player:shuffle', 'player:autoplay', 'player:loop'
+]);
+
+function assertSameVoiceChannel(interaction, player) {
+  if (!player.status().connected || !player.voiceChannelId) return;
+  // Moderator (Move Members) tetap boleh mengontrol dari luar channel.
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.MoveMembers)) return;
+  if (interaction.member?.voice?.channelId !== player.voiceChannelId) {
+    throw new Error(`Kamu harus berada di <#${player.voiceChannelId}> untuk mengontrol musik.`);
+  }
+}
+
+async function replyLyrics(interaction, player) {
+  await interaction.deferReply();
+  const lyric = await player.lyricsForCurrent().catch(() => null);
+  if (!lyric) {
+    await interaction.editReply({ content: '❌ Lirik tidak ditemukan untuk lagu ini.' });
+    return;
+  }
+  const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
+  const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
+  const msg = await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xf1c40f)
+        .setTitle(truncate(`🎤 ${lyric.artistName} - ${lyric.trackName}`, 256))
+        .setDescription(truncate(cleanLyrics, 3800))
+    ]
+  });
+  player.addLyricMessage(msg);
+}
+
+function queueEmbed(player) {
+  const totalSeconds = player.queue.reduce((sum, track) => sum + (track.duration || 0), 0);
+  return new EmbedBuilder()
+    .setColor(0x00c2ff)
+    .setTitle('📋 Antrean')
+    .setDescription(player.queueLines().join('\n'))
+    .setFooter({ text: `${player.queue.length} lagu • total ${formatDuration(totalSeconds)} • Loop ${player.loopMode}` });
+}
+
+function currentTrackMeta(player) {
+  return {
+    title: player.current.title,
+    url: player.current.url || player.current.webpageUrl,
+    uploader: player.current.uploader,
+    duration: player.current.duration,
+    thumbnail: player.current.thumbnail
+  };
+}
+
+async function replyError(interaction, error, { asUpdate = false } = {}) {
+  const content = `❌ ${truncate(error.message || 'Unknown error', 1800)}`;
+  if ((interaction.deferred || interaction.replied) && interaction.isChatInputCommand()) {
+    await interaction.editReply({ content, embeds: [], components: [] }).catch(() => null);
+  } else if (interaction.deferred || interaction.replied) {
+    // Komponen (tombol/menu): editReply setelah deferUpdate akan menimpa
+    // panel Now Playing, jadi kirim pesan error terpisah.
+    await interaction.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => null);
+  } else if (asUpdate) {
+    await interaction.update({ content, components: [] }).catch(() => null);
+  } else {
+    await interaction.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => null);
+  }
 }
 
 async function resolveMember(interaction) {
@@ -442,6 +521,10 @@ client.on('interactionCreate', async (interaction) => {
     const player = playerFor(interaction);
 
     try {
+      if (VOICE_CONTROL_COMMANDS.has(interaction.commandName)) {
+        assertSameVoiceChannel(interaction, player);
+      }
+
       switch (interaction.commandName) {
         case 'play': {
           await interaction.deferReply();
@@ -465,15 +548,17 @@ client.on('interactionCreate', async (interaction) => {
             });
           } else if (result.type === 'playlist') {
             await interaction.editReply({
-              content: `Playlist **${truncate(result.playlistTitle, 120)}** dimasukkan ke queue: ${result.tracks.length} lagu pertama.`
+              content: `📃 Playlist **${truncate(result.playlistTitle, 120)}** ditambahkan: ${result.tracks.length} lagu.`
             });
+          } else if (result.isFirstPlay) {
+            await interaction.editReply({ content: `▶️ Memutar **${truncate(displayTitle(result.tracks[0].title), 120)}**.` });
           } else {
-            await interaction.editReply({ content: `Menambahkan **${truncate(result.tracks[0].title, 120)}** ke queue.` });
+            await interaction.editReply({
+              content: `➕ **${truncate(displayTitle(result.tracks[0].title), 120)}** masuk antrean (#${player.queue.length}).`
+            });
           }
           
-          setTimeout(() => {
-            interaction.deleteReply().catch(() => null);
-          }, 5000);
+          scheduleInteractionDelete(interaction);
           break;
         }
         case 'offlinemode': {
@@ -572,14 +657,14 @@ client.on('interactionCreate', async (interaction) => {
             break;
           }
           await interaction.reply({
-            embeds: [player.buildNowPlayingEmbed()],
+            embeds: [player.buildNowPlayingEmbed({ withProgress: true })],
             flags: MessageFlags.Ephemeral
           });
           break;
         }
         case 'queue':
           await interaction.reply({
-            embeds: [new EmbedBuilder().setColor(0x00c2ff).setTitle('Queue').setDescription(player.queueLines().join('\n'))],
+            embeds: [queueEmbed(player)],
             flags: MessageFlags.Ephemeral
           });
           break;
@@ -637,21 +722,9 @@ client.on('interactionCreate', async (interaction) => {
         case 'status':
           await interaction.reply({ embeds: [await statusEmbed(player)], flags: MessageFlags.Ephemeral });
           break;
-        case 'lyrics': {
-          await interaction.deferReply();
-          const lyric = await player.lyricsForCurrent().catch(() => null);
-          if (!lyric) {
-            return await interaction.editReply({ content: '❌ Lirik tidak ditemukan untuk lagu ini.' });
-          }
-          const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
-          const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
-          const text = truncate(cleanLyrics, 3800);
-          const msg = await interaction.editReply({
-            embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`Lyrics: ${lyric.artistName} - ${lyric.trackName}`).setDescription(text)]
-          });
-          player.addLyricMessage(msg);
+        case 'lyrics':
+          await replyLyrics(interaction, player);
           break;
-        }
         case 'cache-stats': {
           const stats = await player.audioCache.getStats();
           await interaction.reply({
@@ -774,13 +847,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
                 break;
               }
-              const res = playlists.addTrack(interaction.guildId, interaction.user.id, name, {
-                title: player.current.title,
-                url: player.current.url || player.current.webpageUrl,
-                uploader: player.current.uploader,
-                duration: player.current.duration,
-                thumbnail: player.current.thumbnail
-              });
+              const res = playlists.addTrack(interaction.guildId, interaction.user.id, name, currentTrackMeta(player));
               await interaction.reply({
                 content: `✅ Menambahkan lagu yang sedang diputar **${truncate(player.current.title, 80)}** ke playlist **${name}** (posisi #${res.position}, total ${res.trackCount}/${config.maxUserPlaylistTracks}).`,
                 flags: MessageFlags.Ephemeral
@@ -955,12 +1022,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     } catch (error) {
-      const message = truncate(error.message || 'Unknown error', 1800);
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: `Error: ${message}`, embeds: [] }).catch(() => null);
-      } else {
-        await interaction.reply({ content: `Error: ${message}`, flags: MessageFlags.Ephemeral }).catch(() => null);
-      }
+      await replyError(interaction, error);
     }
   }
 
@@ -1019,60 +1081,55 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
+      if (VOICE_CONTROL_BUTTONS.has(interaction.customId)) {
+        assertSameVoiceChannel(interaction, player);
+      }
+
+      // Tombol kontrol tidak mengirim balasan sendiri: panel Now Playing
+      // langsung diperbarui, jadi chat tidak dipenuhi pesan konfirmasi.
       switch (interaction.customId) {
-        case 'player:toggle': {
-          const paused = player.togglePause();
-          await interaction.reply({ content: paused ? 'Playback dijeda.' : 'Playback dilanjutkan.', flags: MessageFlags.Ephemeral });
-          scheduleInteractionDelete(interaction);
+        case 'player:toggle':
+          player.togglePause();
+          await interaction.deferUpdate();
           break;
-        }
         case 'player:skip': {
-          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          await interaction.deferUpdate();
           const skipped = await player.skip();
-          await interaction.editReply({
-            content: skipped ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.'
-          });
-          scheduleInteractionDelete(interaction);
+          if (!skipped) {
+            await interaction.followUp({ content: '⏳ Skip sebelumnya masih diproses.', flags: MessageFlags.Ephemeral });
+          }
           break;
         }
         case 'player:stop':
+          await interaction.deferUpdate();
           await player.stop({ disconnect: true });
-          await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
-          scheduleInteractionDelete(interaction);
           break;
         case 'player:shuffle':
-          await interaction.reply({ content: `Queue diacak. Total: ${player.shuffle()}.`, flags: MessageFlags.Ephemeral });
-          scheduleInteractionDelete(interaction);
+          if (player.queue.length < 2) {
+            await interaction.reply({ content: 'Antrean terlalu pendek untuk diacak.', flags: MessageFlags.Ephemeral });
+            scheduleInteractionDelete(interaction);
+            break;
+          }
+          player.shuffle();
+          await interaction.deferUpdate();
           break;
         case 'player:autoplay':
-          await interaction.reply({ content: `Autoplay \`${player.toggleAutoplay()}\`.`, flags: MessageFlags.Ephemeral });
-          scheduleInteractionDelete(interaction);
+          player.toggleAutoplay();
+          await interaction.deferUpdate();
           break;
         case 'player:loop':
-          await interaction.reply({ content: `Loop mode diubah ke \`${player.nextLoopMode()}\`.`, flags: MessageFlags.Ephemeral });
-          scheduleInteractionDelete(interaction);
+          player.nextLoopMode();
+          await interaction.deferUpdate();
           break;
         case 'player:queue':
           await interaction.reply({
-            embeds: [new EmbedBuilder().setColor(0x00c2ff).setTitle('Queue').setDescription(player.queueLines().join('\n'))],
+            embeds: [queueEmbed(player)],
             flags: MessageFlags.Ephemeral
           });
           break;
-        case 'player:lyrics': {
-          await interaction.deferReply();
-          const lyric = await player.lyricsForCurrent().catch(() => null);
-          if (!lyric) {
-            return await interaction.editReply({ content: '❌ Lirik tidak ditemukan untuk lagu ini.' });
-          }
-          const rawLyrics = lyric.syncedLyrics || lyric.plainLyrics || 'Lyrics kosong.';
-          const cleanLyrics = rawLyrics.replace(/^\[\d{2}:\d{2}\.\d{2,}\]\s?/gm, '');
-          const text = truncate(cleanLyrics, 3800);
-          const msg = await interaction.editReply({
-            embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`Lyrics: ${lyric.artistName} - ${lyric.trackName}`).setDescription(text)]
-          });
-          player.addLyricMessage(msg);
+        case 'player:lyrics':
+          await replyLyrics(interaction, player);
           break;
-        }
         case 'player:playlist': {
           if (!player.current) {
             await interaction.reply({ content: 'Tidak ada lagu yang sedang diputar.', flags: MessageFlags.Ephemeral });
@@ -1086,17 +1143,7 @@ client.on('interactionCreate', async (interaction) => {
             });
             break;
           }
-          const select = new StringSelectMenuBuilder()
-            .setCustomId('playlist:select_save_current')
-            .setPlaceholder('Pilih playlist tujuan...')
-            .addOptions(
-              userPlaylists.map((pl) => ({
-                label: truncate(pl.name, 50),
-                description: `${pl.trackCount}/${config.maxUserPlaylistTracks} lagu (${formatDuration(pl.totalDuration)})`,
-                value: pl.name
-              }))
-            );
-          const row = new ActionRowBuilder().addComponents(select);
+          const row = buildPlaylistSelectRow(userPlaylists, 'playlist:select_save_current', 'Pilih playlist tujuan...');
           await interaction.reply({
             content: `Simpan lagu yang sedang diputar **${truncate(player.current.title, 80)}** ke:`,
             components: [row],
@@ -1106,12 +1153,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     } catch (error) {
-      const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: msg }).catch(() => null);
-      } else {
-        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => null);
-      }
+      await replyError(interaction, error);
     }
   }
 
@@ -1146,12 +1188,7 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
     } catch (error) {
-      const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: msg }).catch(() => null);
-      } else {
-        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => null);
-      }
+      await replyError(interaction, error);
     }
   }
 
@@ -1164,13 +1201,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.update({ content: '❌ Tidak ada lagu yang sedang diputar saat ini.', components: [] });
           return;
         }
-        const res = playlists.addTrack(interaction.guildId, interaction.user.id, selectedPlaylistName, {
-          title: player.current.title,
-          url: player.current.url || player.current.webpageUrl,
-          uploader: player.current.uploader,
-          duration: player.current.duration,
-          thumbnail: player.current.thumbnail
-        });
+        const res = playlists.addTrack(interaction.guildId, interaction.user.id, selectedPlaylistName, currentTrackMeta(player));
         await interaction.update({
           content: `✅ Menambahkan **${truncate(player.current.title, 80)}** ke playlist **${selectedPlaylistName}** (posisi #${res.position}, total ${res.trackCount}/${config.maxUserPlaylistTracks}).`,
           components: []
@@ -1239,12 +1270,7 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
     } catch (error) {
-      const msg = `Error: ${truncate(error.message || 'Unknown error', 1800)}`;
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: msg, components: [] }).catch(() => null);
-      } else {
-        await interaction.update({ content: msg, components: [] }).catch(() => null);
-      }
+      await replyError(interaction, error, { asUpdate: true });
     }
   }
 });

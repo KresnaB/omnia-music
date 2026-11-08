@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import { displayTitle, progressBar,
   formatBytes,
   formatDuration,
   isTransientNetworkError,
@@ -69,4 +69,17 @@ test('isTransientNetworkError identifies transient network failures', () => {
   assert.equal(isTransientNetworkError(new Error('Track not found')), false);
   assert.equal(isTransientNetworkError(null), false);
   assert.equal(isTransientNetworkError(undefined), false);
+});
+
+test('displayTitle strips official/lyrics noise but keeps real titles', () => {
+  assert.equal(displayTitle("Guns N' Roses - Sweet Child O' Mine (Official Music Video)"), "Guns N' Roses - Sweet Child O' Mine");
+  assert.equal(displayTitle('Song [Lyrics]'), 'Song');
+  assert.equal(displayTitle('Song (Live at Wembley)'), 'Song (Live at Wembley)');
+  assert.equal(displayTitle('(Official Video)'), '(Official Video)');
+});
+
+test('progressBar places the knob proportionally and handles unknown duration', () => {
+  assert.ok(progressBar(0, 100).startsWith('`00:00` 🔘'));
+  assert.ok(progressBar(100, 100).includes('🔘 `01:40`'));
+  assert.ok(progressBar(30, 0).includes('LIVE'));
 });

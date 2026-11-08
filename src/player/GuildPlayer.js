@@ -27,9 +27,11 @@ import {
   isYoutubeTrackUnavailableError,
 } from "../services/youtubeErrors.js";
 import {
+  displayTitle,
   formatDuration,
   isTransientNetworkError,
   nowUnixPlus,
+  progressBar,
   truncate,
 } from "../utils/format.js";
 
@@ -531,7 +533,16 @@ export class GuildPlayer {
   }
 
   getElapsedSeconds() {
-    if (!this.playbackStartedAt || !this.current) {
+    if (!this.current) {
+      return 0;
+    }
+    // playbackDuration milik resource tidak ikut bertambah saat dijeda,
+    // berbeda dengan selisih Date.now() yang terus berjalan.
+    const playedMs = this.player?.state?.resource?.playbackDuration;
+    if (typeof playedMs === "number") {
+      return playedMs / 1000 + (this.current.seekSeconds || 0);
+    }
+    if (!this.playbackStartedAt) {
       return 0;
     }
     return (Date.now() - this.playbackStartedAt) / 1000 + (this.current.seekSeconds || 0);
@@ -1281,7 +1292,7 @@ export class GuildPlayer {
     clearTimeout(this.idleTimeout);
     this.idleTimeout = setTimeout(() => {
       void this.sendStatusMessage(
-        "Tidak ada lagu yang diputar selama 3 menit. Bot disconnect otomatis.",
+        `Tidak ada lagu yang diputar selama ${Math.round(config.defaultIdleTimeoutMs / 60000)} menit. Bot disconnect otomatis.`,
       );
       void this.stop({ disconnect: true });
     }, config.defaultIdleTimeoutMs);
@@ -1304,7 +1315,7 @@ export class GuildPlayer {
     this.emptyChannelTimeout = setTimeout(() => {
       this.emptyChannelTimeout = null;
       void this.sendStatusMessage(
-        "Tidak ada listener di voice channel selama 3 menit. Playback dihentikan dan bot disconnect.",
+        `Tidak ada listener di voice channel selama ${Math.round(config.emptyChannelTimeoutMs / 60000)} menit. Playback dihentikan dan bot disconnect.`,
       );
       void this.stop({ disconnect: true });
     }, config.emptyChannelTimeoutMs);
@@ -1449,7 +1460,7 @@ export class GuildPlayer {
           [
             "Queue habis dan tidak ada lagu berikutnya yang bisa diputar.",
             "",
-            `Bot akan disconnect otomatis dalam <t:${nowUnixPlus(Math.floor(config.emptyChannelTimeoutMs / 1000))}:R> jika belum ada lagu lagi.`,
+            `Bot akan disconnect otomatis dalam <t:${nowUnixPlus(config.defaultIdleTimeoutMs)}:R> jika belum ada lagu lagi.`,
           ].join("\n"),
         )
         .setFooter({ text: "Powered by Kubiku Technology" });
@@ -1940,7 +1951,7 @@ export class GuildPlayer {
       this.currentMetrics = metrics;
       console.log(`[PLAYNEXT:${this.guildId}] Calling player.play() with resource for "${truncate(next.title, 80)}"`);
       this.player.play(prepared.resource);
-      await this.publishNowPlaying(reason);
+      await this.publishNowPlaying(reason, { fresh: true });
       void this.preloadUpcomingTracks();
       if (this.autoplay && this.queue.length === 0) {
         console.log(`[PLAYNEXT:${this.guildId}] Autoplay on and queue empty after play, triggering prepareAutoplayTrack`);
@@ -2438,8 +2449,8 @@ export class GuildPlayer {
     };
   }
 
-  async publishNowPlaying(reason) {
-    console.log(`[PUBLISH:${this.guildId}] publishNowPlaying | reason=${reason || 'update'} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | hasMessage=${Boolean(this.currentMessage)}`);
+  async publishNowPlaying(reason, { fresh = false } = {}) {
+    console.log(`[PUBLISH:${this.guildId}] publishNowPlaying | reason=${reason || 'update'} | fresh=${fresh} | current=${this.current ? truncate(this.current.title, 80) : 'null'} | hasMessage=${Boolean(this.currentMessage)}`);
     const runUpdate = async () => {
       if (!this.current || !this.lastTextChannelId) {
         console.log(`[PUBLISH:${this.guildId}] Skipping: current=${Boolean(this.current)} channelId=${Boolean(this.lastTextChannelId)}`);
@@ -2452,6 +2463,19 @@ export class GuildPlayer {
 
       const embed = this.buildNowPlayingEmbed();
       const components = this.buildControlRows();
+
+      // Saat lagu baru mulai, pindahkan panel ke paling bawah jika sudah
+      // tertimbun pesan lain, supaya kontrol selalu mudah dijangkau.
+      if (fresh && this.currentMessage) {
+        const latest = await channel.messages
+          .fetch({ limit: 1 })
+          .then((messages) => messages.first())
+          .catch(() => null);
+        if (latest && latest.id !== this.currentMessage.id) {
+          await this.currentMessage.delete().catch(() => null);
+          this.currentMessage = null;
+        }
+      }
 
       if (this.currentMessage) {
         try {
@@ -2475,26 +2499,47 @@ export class GuildPlayer {
     await this.nowPlayingUpdatePromise;
   }
 
-  buildNowPlayingEmbed() {
+  buildNowPlayingEmbed({ withProgress = false } = {}) {
     const status = this.status();
-    const requester = this.current.requester?.name || "Unknown";
+    const track = this.current;
+    const requester = track.requester?.name || "Unknown";
+    const paused = this.player?.state?.status === AudioPlayerStatus.Paused;
+    const loopLabel = { off: "Off", track: "Lagu", queue: "Antrean" }[status.loopMode] || status.loopMode;
+    const next = this.queue[0];
+
+    const lines = [
+      `👤 **Uploader:** ${truncate(track.uploader || "Unknown", 50)}`,
+      `⏱️ **Duration:** \`${formatDuration(track.duration)}\``,
+    ];
+    if (withProgress) {
+      lines.push(progressBar(this.getElapsedSeconds(), track.duration));
+    }
+    lines.push(
+      `⚙️ **Settings:** Loop \`${loopLabel}\` | Autoplay \`${status.autoplay ? "On" : "Off"}\` | Queue \`${this.queue.length}\``,
+    );
+    if (next) {
+      lines.push(`⏭️ **Berikutnya:** ${truncate(displayTitle(next.title), 70)}`);
+    }
+
     const embed = new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setAuthor({ name: "Now Playing" })
-      .setTitle(truncate(this.current.title, 256) || "Unknown")
-      .setDescription(
-        [
-          `👤 **Uploader:** ${truncate(this.current.uploader || "Unknown", 50)}`,
-          `⏱️ **Duration:** \`${formatDuration(this.current.duration)}\``,
-          `⚙️ **Settings:** Loop \`${status.loopMode}\` | Autoplay \`${status.autoplay ? "On" : "Off"}\` | Queue \`${this.queue.length}\``,
-        ].join("\n"),
-      )
+      .setColor(paused ? 0xf1c40f : track.localPath ? 0x1abc9c : 0x5865f2)
+      .setAuthor({
+        name: paused
+          ? "⏸️ Dijeda"
+          : status.offlineMode
+            ? "💾 Now Playing • Offline"
+            : track.localPath
+              ? "💾 Now Playing • Cache"
+              : "🎶 Now Playing",
+      })
+      .setTitle(truncate(displayTitle(track.title), 256) || "Unknown")
+      .setDescription(lines.join("\n"))
       .setFooter({
         text: `Powered by Kubiku Technology • Requested by ${requester}`,
       });
 
-    if (this.current.webpageUrl) embed.setURL(this.current.webpageUrl);
-    if (this.current.thumbnail) embed.setThumbnail(this.current.thumbnail);
+    if (track.webpageUrl) embed.setURL(track.webpageUrl);
+    if (track.thumbnail) embed.setThumbnail(track.thumbnail);
 
     return embed;
   }
@@ -2737,7 +2782,7 @@ export class GuildPlayer {
 
       console.log(`[SKIP:${this.guildId}] Playing crossfade resource for "${truncate(nextTrack.title, 80)}"`);
       this.player.play(resource);
-      void this.publishNowPlaying("skip-crossfade");
+      void this.publishNowPlaying("skip-crossfade", { fresh: true });
       void this.preloadUpcomingTracks();
       if (this.autoplay && this.queue.length === 0) {
         console.log(`[SKIP:${this.guildId}] Queue empty after crossfade, preparing autoplay`);
