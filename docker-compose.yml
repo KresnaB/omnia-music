@@ -12,3 +12,14 @@ services:
       - ./storage/audio-cache:/config/audio-cache
       - ./storage:/app/storage
       - ./cookies.txt:/config/cookies.txt
+
+  omnia-bot-2:
+    image: omnia-bot:local
+    container_name: omnia-bot-2
+    restart: unless-stopped
+    env_file:
+      - .env.bot2
+    volumes:
+      - ./storage-bot2/audio-cache:/config/audio-cache
+      - ./storage-bot2:/app/storage
+      - ./cookies.txt:/config/cookies.txt

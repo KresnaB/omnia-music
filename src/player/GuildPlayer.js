@@ -1448,11 +1448,6 @@ export class GuildPlayer {
           .setEmoji("🎤")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true),
-        new ButtonBuilder()
-          .setCustomId("player:playlist")
-          .setEmoji("💾")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true),
       ),
     ];
   }
@@ -2623,10 +2618,6 @@ export class GuildPlayer {
           .setCustomId("player:lyrics")
           .setEmoji("🎤")
           .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId("player:playlist")
-          .setEmoji("💾")
-          .setStyle(ButtonStyle.Secondary),
       ),
     ];
   }
@@ -2920,6 +2911,26 @@ export class GuildPlayer {
     return true;
   }
 
+  pause() {
+    if (!this.current) throw new Error("Tidak ada lagu yang sedang diputar");
+    if (this.player.state.status === AudioPlayerStatus.Paused) {
+      return false;
+    }
+    this.player.pause();
+    void this.publishNowPlaying("update");
+    return true;
+  }
+
+  resume() {
+    if (!this.current) throw new Error("Tidak ada lagu yang sedang diputar");
+    if (this.player.state.status !== AudioPlayerStatus.Paused) {
+      return false;
+    }
+    this.player.unpause();
+    void this.publishNowPlaying("update");
+    return true;
+  }
+
   async seek(seconds) {
     console.log(`[SEEK:${this.guildId}] seek(${seconds}) | current=${this.current ? truncate(this.current.title, 80) : 'null'}`);
     if (!this.current) throw new Error("Tidak ada lagu yang sedang diputar");
@@ -2930,6 +2941,53 @@ export class GuildPlayer {
     this.playNonce += 1;
     this.player.stop(true);
     console.log(`[SEEK:${this.guildId}] seek done | queue=${this.queue.length}`);
+  }
+
+  async replay() {
+    if (!this.current) throw new Error("Tidak ada lagu yang sedang diputar");
+    const track = this.current;
+    await this.seek(0);
+    return track;
+  }
+
+  async skipto(position) {
+    if (position < 1 || position > this.queue.length) {
+      throw new Error("Posisi queue tidak valid");
+    }
+    if (position > 1) {
+      this.queue.splice(0, position - 1);
+    }
+    const targetTrack = this.queue[0];
+    if (this.current) {
+      const skipped = await this.skip();
+      if (!skipped) {
+        throw new Error("Transisi skip sebelumnya masih diproses");
+      }
+    } else {
+      void this.queuePlayNext("skipto");
+    }
+    return targetTrack;
+  }
+
+  async previous() {
+    if (this.history.length === 0) {
+      throw new Error("Tidak ada riwayat lagu sebelumnya");
+    }
+    const prevTrack = this.history.pop();
+    prevTrack.seekSeconds = 0;
+    if (this.current) {
+      this.current.seekSeconds = 0;
+      this.queue.unshift(this.current);
+      this.current = null;
+    }
+    this.queue.unshift(prevTrack);
+    this.playNonce = (this.playNonce || 0) + 1;
+    if (this.player.state.status === AudioPlayerStatus.Idle) {
+      void this.queuePlayNext("previous");
+    } else {
+      this.player.stop(true);
+    }
+    return prevTrack;
   }
 
   shuffle() {
@@ -2958,6 +3016,25 @@ export class GuildPlayer {
     this.queue.splice(to - 1, 0, track);
     void this.preloadUpcomingTracks();
     void this.publishNowPlaying("queue-update");
+  }
+
+  remove(position) {
+    this.shuffleActive = false;
+    if (position < 1 || position > this.queue.length) {
+      throw new Error("Posisi queue tidak valid");
+    }
+    const [track] = this.queue.splice(position - 1, 1);
+    void this.preloadUpcomingTracks();
+    void this.publishNowPlaying("queue-update");
+    return track;
+  }
+
+  clearQueue() {
+    const count = this.queue.length;
+    this.queue = [];
+    this.shuffleActive = false;
+    void this.publishNowPlaying("queue-update");
+    return count;
   }
 
   setLoopMode(mode) {
@@ -3034,5 +3111,18 @@ export class GuildPlayer {
       lines.push(`...dan ${this.queue.length - limit} lagu lain.`);
     }
     return lines;
+  }
+
+  historyLines(limit = 10) {
+    if (this.history.length === 0) {
+      return ["Belum ada riwayat lagu yang diputar."];
+    }
+    return this.history
+      .slice(-limit)
+      .reverse()
+      .map(
+        (track, index) =>
+          `${index + 1}. ${track.title} (\`${formatDuration(track.duration)}\`)`,
+      );
   }
 }

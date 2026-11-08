@@ -52,9 +52,18 @@ function helpEmbed() {
         '`/offlinemode <query>` putar semua cache yang cocok tanpa YouTube',
         '`/normalmode` paksa kembali ke mode normal',
         '`/skip` lewati lagu sekarang',
+        '`/previous` putar kembali lagu sebelumnya',
+        '`/pause` jeda playback musik',
+        '`/resume` lanjutkan playback musik',
         '`/stop` stop dan disconnect',
+        '`/replay` putar ulang lagu saat ini dari awal',
         '`/seek <seconds>` lompat ke posisi tertentu',
+        '`/skipto <posisi>` lompat ke nomor urut antrean tertentu',
+        '`/nowplaying` lihat info lagu yang sedang diputar',
         '`/queue` lihat queue aktif',
+        '`/clear` kosongkan antrean lagu',
+        '`/remove <posisi>` hapus lagu dari antrean',
+        '`/history` lihat riwayat lagu yang baru diputar',
         '`/loop <off|track|queue>` atur loop mode',
         '`/shuffle` acak queue',
         '`/autoplay` toggle autoplay',
@@ -494,19 +503,106 @@ client.on('interactionCreate', async (interaction) => {
           scheduleInteractionDelete(interaction);
           break;
         }
+        case 'previous': {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const prev = await player.previous();
+          await interaction.editReply({
+            content: `Memutar kembali lagu sebelumnya: **${truncate(prev.title, 120)}**.`
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
+        case 'pause': {
+          const paused = player.pause();
+          await interaction.reply({
+            content: paused ? 'Playback dijeda.' : 'Playback sudah dalam kondisi jeda.',
+            flags: MessageFlags.Ephemeral
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
+        case 'resume': {
+          const resumed = player.resume();
+          await interaction.reply({
+            content: resumed ? 'Playback dilanjutkan.' : 'Playback sedang berputar.',
+            flags: MessageFlags.Ephemeral
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
         case 'stop':
           await player.stop({ disconnect: true });
           await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
           scheduleInteractionDelete(interaction);
           break;
+        case 'replay': {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const track = await player.replay();
+          await interaction.editReply({
+            content: `Memutar ulang: **${truncate(track.title, 100)}** dari awal.`
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
         case 'seek':
           await player.seek(interaction.options.getInteger('seconds', true));
           await interaction.reply({ content: 'Playback dipindahkan.', flags: MessageFlags.Ephemeral });
           scheduleInteractionDelete(interaction);
           break;
+        case 'skipto': {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const pos = interaction.options.getInteger('position', true);
+          const target = await player.skipto(pos);
+          await interaction.editReply({
+            content: `Melompat ke lagu nomor ${pos}: **${truncate(target.title, 100)}**.`
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
+        case 'nowplaying': {
+          if (!player.current) {
+            await interaction.reply({ content: 'Tidak ada lagu yang sedang diputar.', flags: MessageFlags.Ephemeral });
+            break;
+          }
+          await interaction.reply({
+            embeds: [player.buildNowPlayingEmbed()],
+            flags: MessageFlags.Ephemeral
+          });
+          break;
+        }
         case 'queue':
           await interaction.reply({
             embeds: [new EmbedBuilder().setColor(0x00c2ff).setTitle('Queue').setDescription(player.queueLines().join('\n'))],
+            flags: MessageFlags.Ephemeral
+          });
+          break;
+        case 'clear': {
+          const cleared = player.clearQueue();
+          await interaction.reply({
+            content: `Antrean dikosongkan. Menghapus ${cleared} lagu.`,
+            flags: MessageFlags.Ephemeral
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
+        case 'remove': {
+          const pos = interaction.options.getInteger('position', true);
+          const removed = player.remove(pos);
+          await interaction.reply({
+            content: `Menghapus lagu nomor ${pos}: **${truncate(removed.title, 100)}** dari antrean.`,
+            flags: MessageFlags.Ephemeral
+          });
+          scheduleInteractionDelete(interaction);
+          break;
+        }
+        case 'history':
+          await interaction.reply({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x00c2ff)
+                .setTitle('Riwayat Lagu')
+                .setDescription(player.historyLines().join('\n'))
+            ],
             flags: MessageFlags.Ephemeral
           });
           break;

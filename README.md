@@ -9,16 +9,17 @@ Bot musik Discord berbasis Node.js dengan `discord.js` + `@discordjs/voice`, sia
   - Footer terintegrasi: `Powered by Kubiku Technology • Requested by <User>`.
   - Kontrol interaktif emoji-only (tanpa label teks panjang):
     - Baris 1: `▶️`/`⏸️` (Play/Pause), `⏭️` (Skip), `⏹️` (Stop), `🔀` (Shuffle)
-    - Baris 2: `✨` (Autoplay), `🔁`/`🔂` (Loop Mode), `📋` (Queue), `🎤` (Lyrics), `💾` (Simpan ke Playlist)
+    - Baris 2: `✨` (Autoplay), `🔁`/`🔂` (Loop Mode), `📋` (Queue), `🎤` (Lyrics)
 - **Slash Commands Lengkap**:
-  - **Playback**: `/play`, `/skip`, `/stop`, `/seek`, `/queue`, `/loop`, `/shuffle`, `/autoplay`, `/move`
+  - **Playback**: `/play`, `/skip`, `/previous`, `/pause`, `/resume`, `/stop`, `/replay`, `/seek`, `/skipto`
+  - **Queue**: `/queue`, `/clear`, `/remove`, `/move`, `/loop`, `/shuffle`, `/autoplay`, `/nowplaying`, `/history`
   - **Playlist Pribadi (SQLite)**: `/playlist <create|import|add|add-current|play|list|view|remove|delete>`
   - **Offline & Cache**: `/offlinemode`, `/normalmode`, `/cache-stats`, `/cache-list`, `/cache-delete`
   - **Utility**: `/lyrics`, `/status`, `/sleep`, `/reconnect`, `/help`
 - **Manajemen Playlist Kustom**:
   - Simpan lagu favorit ke playlist server pribadi menggunakan database SQLite bawaan (`node:sqlite`).
   - Impor playlist langsung dari link YouTube.
-  - Tambah lagu saat ini langsung lewat tombol player (`💾`) atau command `/playlist add-current`.
+  - Tambah lagu saat ini langsung lewat command `/playlist add-current`.
 - **Audio Pipeline Cepat & Andal**:
   - Preprocessing 1 lagu berikutnya di background agar transisi lagu instan tanpa jeda buffering.
   - Fallback otomatis ke audio cache lokal saat YouTube/jaringan mengalami gangguan.

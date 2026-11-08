@@ -38,9 +38,18 @@ test('commands includes all critical music bot commands', () => {
     'offlinemode',
     'normalmode',
     'skip',
+    'previous',
+    'pause',
+    'resume',
     'stop',
+    'replay',
     'seek',
+    'skipto',
     'queue',
+    'clear',
+    'remove',
+    'history',
+    'nowplaying',
     'loop',
     'shuffle',
     'autoplay',
@@ -60,6 +69,17 @@ test('commands includes all critical music bot commands', () => {
   for (const name of expectedCommands) {
     assert.ok(map.has(name), `Missing expected slash command: ${name}`);
   }
+
+  // Verify skipto and remove options
+  const skiptoCmd = map.get('skipto');
+  const skiptoPos = skiptoCmd.options?.find((o) => o.name === 'position');
+  assert.ok(skiptoPos, 'skipto must have position option');
+  assert.equal(skiptoPos.required, true);
+
+  const removeCmd = map.get('remove');
+  const removePos = removeCmd.options?.find((o) => o.name === 'position');
+  assert.ok(removePos, 'remove must have position option');
+  assert.equal(removePos.required, true);
 
   // Verify play command has required query option
   const playCmd = map.get('play');

@@ -4,8 +4,10 @@ bin/
 omnia-music
 node_modules/
 storage/
+storage-bot2/
 cookies.txt
 data/
 .hermes/
 *.bak
 .env.bot
+.env.bot*

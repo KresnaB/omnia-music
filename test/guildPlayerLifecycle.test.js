@@ -239,7 +239,7 @@ test('GuildPlayer killCurrentProcesses resets currentProcess and currentSourcePr
   assert.deepEqual(killed, ['source.SIGKILL', 'ffmpeg.SIGKILL']);
 });
 
-test('GuildPlayer buildControlRows and buildDisabledControlRows include playlist button', () => {
+test('GuildPlayer buildControlRows and buildDisabledControlRows have 8 symmetrical buttons without playlist button', () => {
   const context = createPlayerContext({
     player: { state: { status: 'playing' } },
     shuffleActive: false,
@@ -249,12 +249,12 @@ test('GuildPlayer buildControlRows and buildDisabledControlRows include playlist
 
   const activeRows = GuildPlayer.prototype.buildControlRows.call(context);
   assert.equal(activeRows.length, 2);
+  assert.equal(activeRows[0].components.length, 4);
+  assert.equal(activeRows[1].components.length, 4);
   const activeButtons = activeRows.flatMap((r) => r.components);
+  assert.equal(activeButtons.length, 8);
   const playlistActive = activeButtons.find((b) => b.data?.custom_id === 'player:playlist');
-  assert.ok(playlistActive, 'Active control rows must include player:playlist button');
-  assert.equal(playlistActive.data.emoji?.name, '💾');
-  assert.equal(playlistActive.data.label, undefined);
-  assert.equal(Boolean(playlistActive.data.disabled), false);
+  assert.equal(playlistActive, undefined, 'Active control rows must not include player:playlist button');
 
   for (const btn of activeButtons) {
     assert.ok(btn.data.emoji?.name, `Active button ${btn.data.custom_id} must have an emoji`);
@@ -263,16 +263,17 @@ test('GuildPlayer buildControlRows and buildDisabledControlRows include playlist
 
   const disabledRows = GuildPlayer.prototype.buildDisabledControlRows.call(context);
   assert.equal(disabledRows.length, 2);
+  assert.equal(disabledRows[0].components.length, 4);
+  assert.equal(disabledRows[1].components.length, 4);
   const disabledButtons = disabledRows.flatMap((r) => r.components);
+  assert.equal(disabledButtons.length, 8);
   const playlistDisabled = disabledButtons.find((b) => b.data?.custom_id === 'player:playlist');
-  assert.ok(playlistDisabled, 'Disabled control rows must include player:playlist button');
-  assert.equal(playlistDisabled.data.emoji?.name, '💾');
-  assert.equal(playlistDisabled.data.label, undefined);
-  assert.equal(playlistDisabled.data.disabled, true);
+  assert.equal(playlistDisabled, undefined, 'Disabled control rows must not include player:playlist button');
 
   for (const btn of disabledButtons) {
     assert.ok(btn.data.emoji?.name, `Disabled button ${btn.data.custom_id} must have an emoji`);
     assert.equal(btn.data.label, undefined, `Disabled button ${btn.data.custom_id} must not have text label`);
+    assert.equal(btn.data.disabled, true);
   }
 });
 
@@ -365,4 +366,156 @@ test('GuildPlayer playPlaylist connects voice, enqueues tracks, and starts playb
   assert.equal(inserted.length, 2);
   assert.equal(inserted[0].requester.name, 'TestUser');
   assert.equal(inserted[0].originalQuery, 'Playlist: My Mix');
+});
+
+test('GuildPlayer remove removes track by 1-based index and validates bounds', () => {
+  const context = createPlayerContext({
+    queue: [
+      { id: '1', title: 'Track 1' },
+      { id: '2', title: 'Track 2' },
+      { id: '3', title: 'Track 3' }
+    ]
+  });
+
+  const removed = GuildPlayer.prototype.remove.call(context, 2);
+  assert.equal(removed.id, '2');
+  assert.equal(context.queue.length, 2);
+  assert.equal(context.queue[0].id, '1');
+  assert.equal(context.queue[1].id, '3');
+
+  assert.throws(() => GuildPlayer.prototype.remove.call(context, 0), /tidak valid/);
+  assert.throws(() => GuildPlayer.prototype.remove.call(context, 5), /tidak valid/);
+});
+
+test('GuildPlayer clearQueue empties queue and resets shuffleActive', () => {
+  const context = createPlayerContext({
+    queue: [{ id: '1' }, { id: '2' }],
+    shuffleActive: true
+  });
+
+  const count = GuildPlayer.prototype.clearQueue.call(context);
+  assert.equal(count, 2);
+  assert.equal(context.queue.length, 0);
+  assert.equal(context.shuffleActive, false);
+});
+
+test('GuildPlayer pause and resume toggle player states and guard against invalid calls', () => {
+  let paused = false;
+  let unpaused = false;
+
+  const context = createPlayerContext({
+    current: { id: '1', title: 'Song' },
+    player: {
+      state: { status: 'playing' },
+      pause: () => { paused = true; return true; },
+      unpause: () => { unpaused = true; return true; }
+    }
+  });
+
+  // Pause when playing
+  const pauseResult = GuildPlayer.prototype.pause.call(context);
+  assert.equal(pauseResult, true);
+  assert.equal(paused, true);
+
+  // Pause when already paused
+  context.player.state.status = 'paused';
+  assert.equal(GuildPlayer.prototype.pause.call(context), false);
+
+  // Resume when paused
+  const resumeResult = GuildPlayer.prototype.resume.call(context);
+  assert.equal(resumeResult, true);
+  assert.equal(unpaused, true);
+
+  // Resume when already playing
+  context.player.state.status = 'playing';
+  assert.equal(GuildPlayer.prototype.resume.call(context), false);
+
+  // Throw if no current track
+  context.current = null;
+  assert.throws(() => GuildPlayer.prototype.pause.call(context), /Tidak ada lagu/);
+  assert.throws(() => GuildPlayer.prototype.resume.call(context), /Tidak ada lagu/);
+});
+
+test('GuildPlayer replay seeks to 0 for current track', async () => {
+  let seekCalledWith = null;
+  const context = createPlayerContext({
+    current: { id: '1', title: 'Song' },
+    seek: async (sec) => { seekCalledWith = sec; }
+  });
+
+  const res = await GuildPlayer.prototype.replay.call(context);
+  assert.equal(res.id, '1');
+  assert.equal(seekCalledWith, 0);
+
+  context.current = null;
+  await assert.rejects(() => GuildPlayer.prototype.replay.call(context), /Tidak ada lagu/);
+});
+
+test('GuildPlayer skipto advances queue to selected index and calls skip', async () => {
+  let skipCalled = false;
+  const context = createPlayerContext({
+    current: { id: 'curr', title: 'Current' },
+    queue: [
+      { id: '1', title: 'Song 1' },
+      { id: '2', title: 'Song 2' },
+      { id: '3', title: 'Song 3' }
+    ],
+    skip: async () => { skipCalled = true; return true; }
+  });
+
+  const target = await GuildPlayer.prototype.skipto.call(context, 2);
+  assert.equal(target.id, '2');
+  assert.equal(skipCalled, true);
+  assert.equal(context.queue.length, 2);
+  assert.equal(context.queue[0].id, '2');
+
+  assert.rejects(() => GuildPlayer.prototype.skipto.call(context, 0), /tidak valid/);
+  assert.rejects(() => GuildPlayer.prototype.skipto.call(context, 10), /tidak valid/);
+});
+
+test('GuildPlayer previous restores previous track from history', async () => {
+  let stopped = false;
+  const context = createPlayerContext({
+    current: { id: 'curr', title: 'Current Track' },
+    history: [
+      { id: 'hist-1', title: 'Old Track' },
+      { id: 'hist-2', title: 'Previous Track' }
+    ],
+    queue: [{ id: 'q-1', title: 'Next Track' }],
+    player: {
+      state: { status: 'playing' },
+      stop: (force) => { stopped = force; }
+    }
+  });
+
+  const prev = await GuildPlayer.prototype.previous.call(context);
+  assert.equal(prev.id, 'hist-2');
+  assert.equal(stopped, true);
+  assert.equal(context.history.length, 1);
+  assert.equal(context.queue[0].id, 'hist-2');
+  assert.equal(context.queue[1].id, 'curr');
+  assert.equal(context.queue[2].id, 'q-1');
+
+  // Throws if history is empty
+  context.history = [];
+  await assert.rejects(() => GuildPlayer.prototype.previous.call(context), /Tidak ada riwayat/);
+});
+
+test('GuildPlayer historyLines formats history output correctly', () => {
+  const emptyContext = createPlayerContext({ history: [] });
+  assert.deepEqual(GuildPlayer.prototype.historyLines.call(emptyContext), [
+    'Belum ada riwayat lagu yang diputar.'
+  ]);
+
+  const filledContext = createPlayerContext({
+    history: [
+      { title: 'Song A', duration: 120 },
+      { title: 'Song B', duration: 240 }
+    ]
+  });
+
+  const lines = GuildPlayer.prototype.historyLines.call(filledContext);
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].includes('Song B')); // Newest first (reversed)
+  assert.ok(lines[1].includes('Song A'));
 });

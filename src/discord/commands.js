@@ -10,11 +10,24 @@ export const commands = [
     ),
   new SlashCommandBuilder().setName('normalmode').setDescription('Paksa kembali ke mode playback normal'),
   new SlashCommandBuilder().setName('skip').setDescription('Lewati lagu saat ini'),
+  new SlashCommandBuilder().setName('previous').setDescription('Putar kembali lagu sebelumnya'),
+  new SlashCommandBuilder().setName('pause').setDescription('Jeda playback musik'),
+  new SlashCommandBuilder().setName('resume').setDescription('Lanjutkan playback musik'),
   new SlashCommandBuilder().setName('stop').setDescription('Hentikan playback'),
+  new SlashCommandBuilder().setName('replay').setDescription('Putar ulang lagu saat ini dari awal'),
   new SlashCommandBuilder().setName('seek').setDescription('Pindah posisi playback').addIntegerOption((option) =>
     option.setName('seconds').setDescription('Posisi detik').setRequired(true)
   ),
+  new SlashCommandBuilder().setName('skipto').setDescription('Lompat ke lagu tertentu di antrean').addIntegerOption((option) =>
+    option.setName('position').setDescription('Nomor urut lagu tujuan di antrean').setRequired(true).setMinValue(1)
+  ),
   new SlashCommandBuilder().setName('queue').setDescription('Lihat antrean lagu'),
+  new SlashCommandBuilder().setName('clear').setDescription('Kosongkan antrean lagu'),
+  new SlashCommandBuilder().setName('remove').setDescription('Hapus lagu dari antrean').addIntegerOption((option) =>
+    option.setName('position').setDescription('Nomor urut lagu di antrean').setRequired(true).setMinValue(1)
+  ),
+  new SlashCommandBuilder().setName('history').setDescription('Lihat riwayat lagu yang baru diputar'),
+  new SlashCommandBuilder().setName('nowplaying').setDescription('Tampilkan informasi lagu yang sedang diputar'),
   new SlashCommandBuilder().setName('loop').setDescription('Atur mode loop').addStringOption((option) =>
     option
       .setName('mode')
