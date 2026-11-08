@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 
-export const MAX_PLAYLISTS_PER_USER = 10;
-export const MAX_TRACKS_PER_PLAYLIST = 50;
+export const MAX_PLAYLISTS_PER_USER = config.maxUserPlaylists;
+export const MAX_TRACKS_PER_PLAYLIST = config.maxUserPlaylistTracks;
 
 export class PlaylistService {
   constructor(dbPath = config.playlistDbPath || './storage/playlists.db') {

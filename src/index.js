@@ -154,6 +154,13 @@ function registerRuntimeHandlers() {
   client.on('invalidated', () => {
     console.error('[discord] session invalidated');
   });
+
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, async () => {
+      await audioCache.flushPendingPersist().catch(() => null);
+      process.exit(0);
+    });
+  }
 }
 
 function playerFor(interaction) {

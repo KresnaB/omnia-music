@@ -135,3 +135,22 @@ test('AudioCacheService getStats calculates track count and size', async () => {
   assert.equal(stats.totalTracks, 2);
   assert.equal(stats.totalBytes, 3000);
 });
+
+test('AudioCacheService batches access writes and flushes only when pending', async () => {
+  const service = new AudioCacheService();
+  let writes = 0;
+  service.persistIndex = async () => {
+    clearTimeout(service.persistTimer);
+    service.persistTimer = null;
+    writes += 1;
+  };
+
+  await service.flushPendingPersist();
+  assert.equal(writes, 0);
+
+  service.schedulePersist();
+  service.schedulePersist();
+  await service.flushPendingPersist();
+  assert.equal(writes, 1);
+  assert.equal(service.persistTimer, null);
+});

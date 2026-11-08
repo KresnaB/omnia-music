@@ -16,14 +16,6 @@ const CANONICAL_NOISE_PATTERNS = [
   /[-|:]\s*(official|audio|video|lyrics?|lyric|visualizer|mv|hd|hq|4k|8k|remaster(?:ed)?|live|acoustic|karaoke|cover|performance|session|radio edit).*$/gi
 ];
 
-function sanitizeFilePart(value) {
-  return String(value || 'track')
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120) || 'track';
-}
-
 function normalizeText(value) {
   return String(value || '')
     .normalize('NFKD')
@@ -68,82 +60,6 @@ function createSearchDocument(entry) {
   };
 }
 
-function cloneTrackMeta(track) {
-  const uploader = track.uploader || 'Unknown';
-  const title = track.title || 'Unknown title';
-  
-  return {
-    id: track.id || null,
-    title: title,
-    url: track.url || track.webpageUrl || null,
-    webpageUrl: track.webpageUrl || track.url || null,
-    duration: Number(track.duration || 0),
-    uploader: uploader,
-    thumbnail: track.thumbnail || null,
-    source: track.source || 'youtube',
-    canonicalKey: track.canonicalKey || canonicalizeTitle(title),
-    cacheFormat: 'ogg',
-    cacheCodec: 'opus',
-    cacheBitrateKbps: config.audioCacheBitrateKbps,
-    album: track.album || extractAlbum(title, uploader) || uploader,
-    normalizedArtist: track.normalizedArtist || uploader
-  };
-}
-
-const LABEL_PATTERNS = [
-  'musica studios', 'sony music', 'trinity optima', 'hits records',
-  'nagaswara', 'emotion entertainment', 'gp records', '1thek',
-  '20th century', 'warner records', 'universal music', 'atlantic records',
-  'republic records', 'interscope', 'columbia records', 'rca records',
-  'def jam', 'capitol records', 'virgin records', 'parlophone',
-  'official video', 'official channel', 'records', 'entertainment',
-  'production', 'music channel', 'vevo',
-  '7clouds', '1106 radio', 'as tone', 'no copyrightsounds',
-  'aquarius musikindo', 'nagaswara official', 'aini musik',
-  'musik proaktif', 'indolirik', 'latin hype', 'sonymusicidvevo',
-  'dan music', '510 music',
-];
-
-function isLabel(uploader) {
-  const lower = (uploader || '').toLowerCase();
-  return LABEL_PATTERNS.some(label => lower.includes(label));
-}
-
-function extractAlbum(title, uploader) {
-  // If uploader is not a label, use it as album
-  if (!isLabel(uploader)) {
-    return uploader;
-  }
-  
-  // Try "Artist - Song" pattern
-  const dashIdx = title.indexOf(' - ');
-  if (dashIdx > 0 && dashIdx < 50) {
-    const artist = title.substring(0, dashIdx).trim();
-    if (artist.length > 1 && artist.length < 60) {
-      return artist;
-    }
-  }
-  
-  // Try "[Artist] Song" pattern
-  if (title.startsWith('[')) {
-    const endIdx = title.indexOf(']');
-    if (endIdx > 0 && endIdx < 50) {
-      return title.substring(1, endIdx).trim();
-    }
-  }
-  
-  // Try "Song by Artist" pattern
-  const byIdx = title.toLowerCase().lastIndexOf(' by ');
-  if (byIdx > 0) {
-    const artist = title.substring(byIdx + 4).trim();
-    if (artist.length > 1 && artist.length < 60) {
-      return artist;
-    }
-  }
-  
-  return uploader;
-}
-
 function cloneTrackFromEntry(entry, overrides = {}) {
   return {
     ...(entry.track || {}),
@@ -159,40 +75,6 @@ function cloneTrackFromEntry(entry, overrides = {}) {
   };
 }
 
-function waitForExit(process, label) {
-  return new Promise((resolve, reject) => {
-    let stderr = '';
-    process.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    process.once('error', reject);
-    process.once('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${label} exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(0, 400)}` : ''}`));
-    });
-  });
-}
-
-function buildHttpHeaders(track) {
-  const headers = { ...(track.httpHeaders || {}) };
-
-  if (track.webpageUrl && /^https?:\/\//.test(track.webpageUrl)) {
-    headers.Referer ??= track.webpageUrl;
-  }
-
-  headers.Origin ??= 'https://www.youtube.com';
-  headers['User-Agent'] ??=
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
-
-  return Object.entries(headers)
-    .filter(([, value]) => value !== null && value !== undefined && String(value).length > 0)
-    .map(([key, value]) => `${key}: ${value}\r\n`)
-    .join('');
-}
-
 export class AudioCacheService {
   constructor() {
     this.index = new Map();
@@ -201,6 +83,7 @@ export class AudioCacheService {
     this.persistPromise = Promise.resolve();
     this.searchDocs = [];
     this.fuse = null;
+    this.persistTimer = null;
   }
 
   rebuildSearchIndex() {
@@ -307,34 +190,48 @@ export class AudioCacheService {
       }
     }
 
-    for (const entry of parsed) {
-      if (!entry?.canonicalKey || !entry?.fileName) {
-        continue;
-      }
+    const valid = parsed.filter((entry) => entry?.canonicalKey && entry?.fileName);
+    const stats = await Promise.allSettled(
+      valid.map((entry) => stat(path.join(config.audioCacheDir, entry.fileName)))
+    );
 
-      const filePath = path.join(config.audioCacheDir, entry.fileName);
-      try {
-        const fileStat = await stat(filePath);
-        this.index.set(entry.canonicalKey, {
-          canonicalKey: entry.canonicalKey,
-          fileName: entry.fileName,
-          filePath,
-          sizeBytes: fileStat.size,
-          createdAt: entry.createdAt || Date.now(),
-          lastAccessedAt: entry.lastAccessedAt || entry.createdAt || Date.now(),
-          track: entry.track || {}
-        });
-      } catch {
-        // File sudah hilang, abaikan index lama.
-      }
-    }
+    valid.forEach((entry, i) => {
+      // File yang sudah hilang (stat gagal) diabaikan dari index lama.
+      if (stats[i].status !== 'fulfilled') return;
+      this.index.set(entry.canonicalKey, {
+        canonicalKey: entry.canonicalKey,
+        fileName: entry.fileName,
+        filePath: path.join(config.audioCacheDir, entry.fileName),
+        sizeBytes: stats[i].value.size,
+        createdAt: entry.createdAt || Date.now(),
+        lastAccessedAt: entry.lastAccessedAt || entry.createdAt || Date.now(),
+        track: entry.track || {}
+      });
+    });
 
-    await this.persistIndex();
     await this.enforceLimits();
-    this.rebuildSearchIndex();
+    await this.persistIndex();
+  }
+
+  // lastAccessedAt hanya dipakai enforceLimits saat startup, jadi update akses
+  // cukup ditulis berkala, tidak perlu menulis ulang seluruh index di setiap play.
+  schedulePersist(delayMs = 30_000) {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.persistIndex().catch((error) => console.warn('[audio-cache] persist failed:', error.message));
+    }, delayMs);
+    this.persistTimer.unref?.();
+  }
+
+  async flushPendingPersist() {
+    if (!this.persistTimer) return;
+    await this.persistIndex();
   }
 
   async persistIndex() {
+    clearTimeout(this.persistTimer);
+    this.persistTimer = null;
     const entries = [...this.index.values()]
       .sort((a, b) => a.createdAt - b.createdAt)
       .map((entry) => ({
@@ -346,8 +243,8 @@ export class AudioCacheService {
         track: entry.track
       }));
 
-    this.persistPromise = this.persistPromise.then(() =>
-      writeFile(config.audioCacheIndexFile, JSON.stringify({ entries }, null, 2), 'utf8')
+    this.persistPromise = this.persistPromise.catch(() => null).then(() =>
+      writeFile(config.audioCacheIndexFile, JSON.stringify({ entries }), 'utf8')
     );
 
     await this.persistPromise;
@@ -390,7 +287,7 @@ export class AudioCacheService {
     const exact = this.index.get(needle);
     if (exact) {
       exact.lastAccessedAt = Date.now();
-      await this.persistIndex();
+      this.schedulePersist();
       return cloneTrackFromEntry(exact, overrides);
     }
 
@@ -401,7 +298,7 @@ export class AudioCacheService {
     }
 
     partial.lastAccessedAt = Date.now();
-    await this.persistIndex();
+    this.schedulePersist();
     return cloneTrackFromEntry(partial, overrides);
   }
 
@@ -420,7 +317,7 @@ export class AudioCacheService {
     for (const entry of matches) {
       entry.lastAccessedAt = now;
     }
-    await this.persistIndex();
+    this.schedulePersist();
 
     return matches.map((entry) => cloneTrackFromEntry(entry, overrides));
   }
@@ -438,7 +335,7 @@ export class AudioCacheService {
     }
 
     chosen.lastAccessedAt = Date.now();
-    await this.persistIndex();
+    this.schedulePersist();
     return cloneTrackFromEntry(chosen, {
       requester,
       addedAt: Date.now(),
@@ -465,7 +362,7 @@ export class AudioCacheService {
 
     const chosen = candidates[Math.floor(Math.random() * Math.min(candidates.length, 15))];
     chosen.lastAccessedAt = Date.now();
-    await this.persistIndex();
+    this.schedulePersist();
     return cloneTrackFromEntry(chosen, {
       requester,
       addedAt: Date.now(),
@@ -531,25 +428,8 @@ export class AudioCacheService {
     track.metadataPending = false;
 
     entry.lastAccessedAt = Date.now();
-    await this.persistIndex();
+    this.schedulePersist();
     return entry;
-  }
-
-  async queueDownload(track) {
-    // Download cache DINONAKTIFKAN (Juli 2026+): CDN googlevideo menolak
-    // request Range >= ~1MB / full-file / tanpa batas dengan 403 (anti-ripping),
-    // jadi download track baru tidak bisa diandalkan.
-    // Yang tetap berfungsi:
-    //   - Play dari lokal jika track sudah ada di cache (hydrateLocalReference)
-    //   - Failover ke lagu lokal saat YouTube error (getBestMatchTrack)
-    await this.init();
-    const canonicalKey = track.canonicalKey || this.getCanonicalKey(track);
-    track.canonicalKey = canonicalKey;
-    return this.index.has(canonicalKey) ? this.index.get(canonicalKey) : null;
-  }
-
-  async downloadTrack(track, canonicalKey) {
-    throw new Error('Download lagu baru ke cache lokal dinonaktifkan');
   }
 
   async enforceLimits() {

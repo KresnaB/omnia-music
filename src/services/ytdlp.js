@@ -95,32 +95,6 @@ function isPlaylistLike(query, result) {
   return /[?&]list=/.test(query) || /\/playlist\?/.test(query);
 }
 
-function extractVideoIdFromUrl(input) {
-  try {
-    const url = new URL(input);
-    if (url.searchParams.get('v')) {
-      return url.searchParams.get('v');
-    }
-    if (url.hostname === 'youtu.be') {
-      const shortId = url.pathname.replace(/^\/+/, '').split('/')[0];
-      if (/^[a-zA-Z0-9_-]{11}$/.test(shortId)) {
-        return shortId;
-      }
-    }
-    const embedMatch = url.pathname.match(/\/(?:embed|live)\/([a-zA-Z0-9_-]{11})/);
-    if (embedMatch) {
-      return embedMatch[1];
-    }
-    const shortsMatch = url.pathname.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
-    if (shortsMatch) {
-      return shortsMatch[1];
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 function buildBaseArgs() {
   const args = [
     '--default-search',
@@ -223,30 +197,6 @@ function selectBestAudioSource(entry) {
   return { source, streamUrl: null };
 }
 
-async function fetchStreamSelection(target) {
-  const args = [
-    ...buildBaseArgs(),
-    '--no-playlist',
-    '--dump-single-json',
-    '-f',
-    'bestaudio/best',
-    target
-  ];
-
-  const { stdout, stderr, payload } = await runYtDlpJson(args);
-  const { source, streamUrl } = selectBestAudioSource(payload);
-
-  if (!streamUrl) {
-    const detail = `${stdout}\n${stderr}`.trim();
-    throw new Error(`yt-dlp tidak mengembalikan direct stream URL${detail ? `: ${detail.slice(0, 300)}` : ''}`);
-  }
-
-  return {
-    streamUrl,
-    httpHeaders: extractHttpHeaders(source || payload)
-  };
-}
-
 function extractStreamUrl(entry) {
   return selectBestAudioSource(entry).streamUrl;
 }
@@ -300,25 +250,6 @@ function normalizeEntry(entry, fallbackQuery = '') {
   };
 }
 
-function buildFastTrack(url) {
-  const videoId = extractVideoIdFromUrl(url);
-  return {
-    id: videoId || url,
-    title: url,
-    url,
-    webpageUrl: url,
-    streamUrl: null,
-    duration: 0,
-    uploader: 'Loading...',
-    thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null,
-    source: 'youtube',
-    searchQuery: url,
-    preparedAt: null,
-    seekSeconds: 0,
-    metadataPending: true
-  };
-}
-
 export class YTDlpService {
   async resolve(query, { bypassCache = false } = {}) {
     const normalizedQuery = normalizeQuery(query);
@@ -334,28 +265,6 @@ export class YTDlpService {
     const isPlaylist = isUrl(normalizedQuery) && (/[?&]list=/.test(normalizedQuery) || /\/playlist\?/.test(normalizedQuery) || /[?&]start_radio=/.test(normalizedQuery));
     const target = isUrl(normalizedQuery) ? normalizedQuery : `ytsearch1:${normalizedQuery}`;
     console.log(`[YTDLP:resolve] isPlaylist=${isPlaylist} | target="${truncate(target, 100)}"`);
-
-    if (isUrl(normalizedQuery) && !isPlaylist) {
-      try {
-        console.log(`[YTDLP:resolve] Trying fast stream selection for single URL`);
-        const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
-        const track = buildFastTrack(normalizedQuery);
-        track.streamUrl = streamUrl;
-        track.httpHeaders = httpHeaders;
-        track.preparedAt = Date.now();
-        console.log(`[YTDLP:resolve] Fast track created | id=${track.id} | title=${truncate(track.title, 80)} | streamUrl=${Boolean(streamUrl)}`);
-
-        const resultPayload = {
-          type: 'single',
-          tracks: [track]
-        };
-        setCache(normalizedQuery, resultPayload, 5 * 60 * 1000);
-        return resultPayload;
-      } catch (error) {
-        console.warn(`[YTDLP:resolve] Fast stream selection failed, falling back: ${error.message}`);
-        // Fallback ke jalur lama bila direct stream cepat gagal.
-      }
-    }
 
     const args = [
       ...buildBaseArgs(),
@@ -430,15 +339,13 @@ export class YTDlpService {
       const { stdout, stderr, payload } = await runYtDlpJson(args);
       console.log(`[YTDLP:hydrate] Got payload | id=${payload?.id} | title=${truncate(payload?.title || '', 80)}`);
       const next = normalizeEntry(payload, track.searchQuery || track.title);
-      console.log(`[YTDLP:hydrate] Normalized entry | fetching stream selection...`);
-      const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
 
       track.id = next.id;
       track.title = next.title;
       track.url = next.url;
       track.webpageUrl = next.webpageUrl;
-      track.streamUrl = streamUrl || next.streamUrl;
-      track.httpHeaders = httpHeaders || next.httpHeaders;
+      track.streamUrl = next.streamUrl;
+      track.httpHeaders = next.httpHeaders;
       track.duration = next.duration;
       track.uploader = next.uploader;
       track.thumbnail = next.thumbnail;
@@ -451,31 +358,6 @@ export class YTDlpService {
       const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
       console.error(`[YTDLP:hydrate] Failed: ${detail.slice(0, 500)}`);
       throw createYoutubeError(error, 'hydrate');
-    }
-  }
-
-  async ensureStreamUrl(track) {
-    console.log(`[YTDLP:ensureStream] Ensuring stream URL | title="${truncate(track?.title || 'unknown', 80)}" | hasStream=${Boolean(track?.streamUrl)} | age=${track?.preparedAt ? (Date.now() - track.preparedAt) + 'ms' : 'N/A'}`);
-
-    if (track.streamUrl && track.preparedAt && Date.now() - track.preparedAt < STREAM_URL_MAX_AGE_MS) {
-      console.log(`[YTDLP:ensureStream] Stream URL still fresh (age < ${STREAM_URL_MAX_AGE_MS}ms), skipping`);
-      return track;
-    }
-
-    const target = track.webpageUrl || track.url || track.searchQuery || track.title;
-    console.log(`[YTDLP:ensureStream] Fetching stream for target="${truncate(target, 100)}"`);
-
-    try {
-      const { streamUrl, httpHeaders } = await fetchStreamSelection(target);
-      console.log(`[YTDLP:ensureStream] Got stream URL | streamUrl=${Boolean(streamUrl)} | hasHeaders=${Boolean(httpHeaders)}`);
-      track.streamUrl = streamUrl;
-      track.httpHeaders = httpHeaders || track.httpHeaders || null;
-      track.preparedAt = Date.now();
-      return track;
-    } catch (error) {
-      const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
-      console.error(`[YTDLP:ensureStream] Failed: ${detail.slice(0, 500)}`);
-      throw createYoutubeError(error, 'stream');
     }
   }
 
