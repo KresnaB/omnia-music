@@ -47,6 +47,29 @@ export class PlaylistService {
 
       CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(guild_id, user_id);
       CREATE INDEX IF NOT EXISTS idx_playlist_tracks_pos ON playlist_tracks(playlist_id, position);
+
+      CREATE TABLE IF NOT EXISTS play_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        uploader TEXT DEFAULT '',
+        duration INTEGER DEFAULT 0,
+        thumbnail TEXT,
+        source TEXT DEFAULT 'youtube',
+        play_count INTEGER NOT NULL DEFAULT 1,
+        last_played_at INTEGER NOT NULL,
+        UNIQUE(guild_id, url)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_play_history_guild_recent ON play_history(guild_id, last_played_at DESC);
+
+      CREATE TABLE IF NOT EXISTS guild_settings (
+        guild_id TEXT PRIMARY KEY,
+        mode_247 INTEGER NOT NULL DEFAULT 0,
+        dj_role_id TEXT DEFAULT NULL
+      );
     `);
   }
 
@@ -352,6 +375,122 @@ export class PlaylistService {
 
     this.db.prepare('DELETE FROM playlists WHERE id = ?').run(playlist.id);
     return true;
+  }
+
+  recordHistory(guildId, track) {
+    const url = track?.webpageUrl || track?.url;
+    const title = String(track?.title || '').trim();
+    if (!guildId || !url || !/^https?:\/\//i.test(url) || !title) {
+      return null;
+    }
+
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO play_history (guild_id, track_id, title, url, uploader, duration, thumbnail, source, play_count, last_played_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(guild_id, url) DO UPDATE SET
+        track_id = excluded.track_id,
+        title = excluded.title,
+        uploader = excluded.uploader,
+        duration = excluded.duration,
+        thumbnail = excluded.thumbnail,
+        source = excluded.source,
+        play_count = play_history.play_count + 1,
+        last_played_at = excluded.last_played_at
+    `).run(
+      guildId,
+      String(track.id || url),
+      title,
+      url,
+      track.uploader || '',
+      Math.floor(track.duration || 0),
+      track.thumbnail || null,
+      track.source || 'youtube',
+      now
+    );
+
+    this.db.prepare(`
+      DELETE FROM play_history
+      WHERE guild_id = ? AND id NOT IN (
+        SELECT id FROM play_history WHERE guild_id = ? ORDER BY last_played_at DESC LIMIT 5000
+      )
+    `).run(guildId, guildId);
+
+    return { url, title, lastPlayedAt: now };
+  }
+
+  searchHistory(guildId, query = '', limit = 25) {
+    const needle = String(query || '').trim().toLowerCase();
+    const safeLimit = Math.max(1, Math.min(25, Number(limit) || 25));
+
+    if (!needle) {
+      return this.db.prepare(`
+        SELECT track_id as trackId, title, url, uploader, duration, thumbnail, source, play_count as playCount, last_played_at as lastPlayedAt
+        FROM play_history
+        WHERE guild_id = ?
+        ORDER BY last_played_at DESC
+        LIMIT ?
+      `).all(guildId, safeLimit);
+    }
+
+    const like = `%${needle}%`;
+    return this.db.prepare(`
+      SELECT track_id as trackId, title, url, uploader, duration, thumbnail, source, play_count as playCount, last_played_at as lastPlayedAt
+      FROM play_history
+      WHERE guild_id = ? AND (LOWER(title) LIKE ? OR LOWER(uploader) LIKE ?)
+      ORDER BY last_played_at DESC
+      LIMIT ?
+    `).all(guildId, like, like, safeLimit);
+  }
+
+  findHistoryMatch(guildId, query) {
+    const trimmed = String(query || '').trim();
+    if (!guildId || !trimmed) return null;
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      return this.db.prepare(`
+        SELECT track_id as id, title, url, url as webpageUrl, uploader, duration, thumbnail, source
+        FROM play_history
+        WHERE guild_id = ? AND url = ?
+        LIMIT 1
+      `).get(guildId, trimmed) || null;
+    }
+
+    return this.db.prepare(`
+      SELECT track_id as id, title, url, url as webpageUrl, uploader, duration, thumbnail, source
+      FROM play_history
+      WHERE guild_id = ? AND LOWER(title) = LOWER(?)
+      ORDER BY last_played_at DESC
+      LIMIT 1
+    `).get(guildId, trimmed) || null;
+  }
+
+  getGuildSettings(guildId) {
+    const row = this.db.prepare('SELECT guild_id, mode_247, dj_role_id FROM guild_settings WHERE guild_id = ?').get(guildId);
+    return {
+      guildId,
+      mode247: Boolean(row?.mode_247),
+      djRoleId: row?.dj_role_id || null
+    };
+  }
+
+  setMode247(guildId, enabled) {
+    const val = enabled ? 1 : 0;
+    this.db.prepare(`
+      INSERT INTO guild_settings (guild_id, mode_247, dj_role_id)
+      VALUES (?, ?, NULL)
+      ON CONFLICT(guild_id) DO UPDATE SET mode_247 = excluded.mode_247
+    `).run(guildId, val);
+    return this.getGuildSettings(guildId);
+  }
+
+  setDjRole(guildId, roleId) {
+    this.db.prepare(`
+      INSERT INTO guild_settings (guild_id, mode_247, dj_role_id)
+      VALUES (?, 0, ?)
+      ON CONFLICT(guild_id) DO UPDATE SET dj_role_id = excluded.dj_role_id
+    `).run(guildId, roleId || null);
+    return this.getGuildSettings(guildId);
   }
 
   close() {

@@ -15,6 +15,7 @@ import {
   TextInputStyle
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import { config, validateConfig } from './config.js';
 import { commands } from './discord/commands.js';
 import { AudioCacheService } from './services/audioCache.js';
@@ -34,13 +35,17 @@ const ytdlp = new YTDlpService();
 const audioCache = new AudioCacheService();
 const playlists = new PlaylistService();
 const lyrics = new LyricsService();
-const players = new PlayerManager({ client, ytdlp, lyrics, audioCache });
+const players = new PlayerManager({ client, ytdlp, lyrics, audioCache, playlists });
 const AUTO_DELETE_MS = 5000;
 const CACHE_LIST_PAGE_SIZE = 10;
 const CACHE_LIST_SESSION_TTL_MS = 15 * 60 * 1000;
 const LOGIN_RETRY_BASE_DELAY_MS = 5_000;
 const LOGIN_RETRY_MAX_DELAY_MS = 60_000;
+const HEALTH_FILE_PATH = '/tmp/omnia-health';
+const SHARD_RECONNECT_WINDOW_MS = 5 * 60 * 1000;
+const SHARD_RECONNECT_ALERT_THRESHOLD = 5;
 let networkOutageDetected = false;
+const shardReconnectTimestamps = [];
 const cacheListSessions = new Map();
 
 function helpEmbed() {
@@ -149,7 +154,17 @@ function registerRuntimeHandlers() {
   });
 
   client.on('shardReconnecting', (shardId) => {
+    const now = Date.now();
+    shardReconnectTimestamps.push(now);
+    while (shardReconnectTimestamps.length > 0 && now - shardReconnectTimestamps[0] > SHARD_RECONNECT_WINDOW_MS) {
+      shardReconnectTimestamps.shift();
+    }
     console.warn(`[discord] shard ${shardId} reconnecting`);
+    if (shardReconnectTimestamps.length >= SHARD_RECONNECT_ALERT_THRESHOLD) {
+      console.error(
+        `[discord] ALERT: shard ${shardId} reconnected ${shardReconnectTimestamps.length}x in last 5m`
+      );
+    }
   });
 
   client.on('shardResume', (shardId, replayedEvents) => {
@@ -177,8 +192,53 @@ function playerFor(interaction) {
 // berada di voice channel yang sama dengan bot.
 const VOICE_CONTROL_COMMANDS = new Set([
   'skip', 'previous', 'pause', 'resume', 'stop', 'replay', 'seek', 'skipto',
-  'clear', 'remove', 'loop', 'shuffle', 'autoplay', 'move', 'sleep', 'normalmode'
+  'clear', 'remove', 'loop', 'shuffle', 'autoplay', 'move', 'sleep', 'normalmode', '247'
 ]);
+const DJ_RESTRICTED_COMMANDS = new Set([
+  'stop', 'clear', 'remove', 'move', 'skipto', 'loop', 'shuffle', 'autoplay', '247'
+]);
+const DJ_RESTRICTED_BUTTONS = new Set(['player:stop', 'player:shuffle', 'player:loop', 'player:autoplay']);
+
+function isDjOrAdmin(member, settings) {
+  if (!settings?.djRoleId) return true;
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.ManageGuild) || member.permissions?.has(PermissionFlagsBits.Administrator)) {
+    return true;
+  }
+  return Boolean(member.roles?.cache?.has(settings.djRoleId));
+}
+
+function assertDjOrAdmin(member, settings) {
+  if (!isDjOrAdmin(member, settings)) {
+    throw new Error(`Perintah ini memerlukan role DJ (<@&${settings.djRoleId}>) atau izin Manage Server.`);
+  }
+}
+
+async function getHumanVoiceListeners(player) {
+  if (!player.voiceChannelId) return 1;
+  const channel = await client.channels.fetch(player.voiceChannelId).catch(() => null);
+  if (!channel?.isVoiceBased?.()) return 1;
+  return channel.members?.filter((m) => !m.user?.bot).size || 1;
+}
+
+async function evaluateSkipAccess(interaction, player, member) {
+  const settings = playlists.getGuildSettings(interaction.guildId);
+  const humanCount = await getHumanVoiceListeners(player);
+  const isRequester = Boolean(player.current?.requester?.id && player.current.requester.id === interaction.user.id);
+  const isPrivileged = Boolean(settings.djRoleId && isDjOrAdmin(member, settings));
+
+  if (humanCount <= 2 || isRequester || isPrivileged) {
+    return { allowed: true, voted: false };
+  }
+
+  player.skipVotes.add(interaction.user.id);
+  const required = Math.ceil(humanCount / 2);
+  if (player.skipVotes.size >= required) {
+    return { allowed: true, voted: true, votes: player.skipVotes.size, required };
+  }
+
+  return { allowed: false, votes: player.skipVotes.size, required };
+}
 const VOICE_CONTROL_BUTTONS = new Set([
   'player:toggle', 'player:skip', 'player:stop', 'player:shuffle', 'player:autoplay', 'player:loop'
 ]);
@@ -273,7 +333,10 @@ function youtubeErrorKindLabel(kind) {
 
 async function statusEmbed(player) {
   const status = player.status();
-  const cacheStats = await player.audioCache.getStats().catch(() => null);
+  const [cacheStats, infraHealth] = await Promise.all([
+    player.audioCache.getStats().catch(() => null),
+    player.ytdlp?.getHealthReport?.().catch(() => null)
+  ]);
   const lines = [
     `Connected: \`${status.connected}\``,
     `Paused: \`${status.paused}\``,
@@ -281,6 +344,7 @@ async function statusEmbed(player) {
     `Autoplay: \`${status.autoplay}\``,
     `Queue size: \`${status.queueSize}\``,
     `Playback mode: \`${status.offlineMode ? 'offline-cache-only' : 'normal'}\``,
+    `Mode 24/7: \`${status.mode247 ? 'aktif' : 'nonaktif'}\``,
     `YouTube: \`${status.youtubeStatus}\``,
     `Kategori error terakhir: \`${youtubeErrorKindLabel(status.youtubeLastFailureKind)}\``,
     `Probe terakhir: ${formatDiscordTimestamp(status.youtubeLastCheckedAt)}`,
@@ -310,6 +374,30 @@ async function statusEmbed(player) {
   } else {
     lines.push('Cache: `statistik tidak tersedia`');
   }
+
+  if (infraHealth) {
+    const cookiesLabel = !infraHealth.cookies.configured
+      ? '`nonaktif`'
+      : infraHealth.cookies.ok
+        ? `\`ok\` (diperbarui ${formatDiscordTimestamp(infraHealth.cookies.updatedAt)})`
+        : `\`${infraHealth.cookies.reason}\``;
+    const potLabel = !infraHealth.pot.configured
+      ? '`nonaktif`'
+      : infraHealth.pot.ok
+        ? `\`up\` (${infraHealth.pot.reason})`
+        : `\`down\` (${infraHealth.pot.reason})`;
+    const ytdlpLabel = !infraHealth.lastStatus
+      ? '`belum ada aktivitas`'
+      : infraHealth.lastStatus.ok
+        ? `\`ok\` via \`${infraHealth.lastStatus.client}\` (${formatDiscordTimestamp(infraHealth.lastStatus.at)})`
+        : `\`error\` via \`${infraHealth.lastStatus.client}\` (${formatDiscordTimestamp(infraHealth.lastStatus.at)})`;
+    lines.push(`Cookies: ${cookiesLabel}`);
+    lines.push(`POT Provider: ${potLabel}`);
+    lines.push(`yt-dlp terakhir: ${ytdlpLabel}`);
+  }
+
+  const guildSettings = playlists.getGuildSettings(player.guildId);
+  lines.push(`DJ Role: ${guildSettings.djRoleId ? `<@&${guildSettings.djRoleId}>` : '`nonaktif`'}`);
 
   if (status.current) {
     lines.push(`Current: **${status.current.title}**`);
@@ -496,20 +584,28 @@ function renderPlaylistViewEmbed(data) {
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isAutocomplete()) {
     try {
-      if (interaction.commandName === 'playlist') {
-        const focused = interaction.options.getFocused(true);
-        if (focused.name === 'name') {
-          const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
-          const filterVal = String(focused.value || '').toLowerCase();
-          const filtered = userPlaylists
-            .filter((p) => p.name.toLowerCase().includes(filterVal))
-            .slice(0, 25)
-            .map((p) => ({
-              name: `${truncate(p.name, 50)} (${p.trackCount}/${config.maxUserPlaylistTracks} lagu)`,
-              value: p.name
-            }));
-          await interaction.respond(filtered).catch(() => null);
-        }
+      const focused = interaction.options.getFocused(true);
+      if (interaction.commandName === 'playlist' && focused.name === 'name') {
+        const userPlaylists = playlists.getPlaylists(interaction.guildId, interaction.user.id);
+        const filterVal = String(focused.value || '').toLowerCase();
+        const filtered = userPlaylists
+          .filter((p) => p.name.toLowerCase().includes(filterVal))
+          .slice(0, 25)
+          .map((p) => ({
+            name: `${truncate(p.name, 50)} (${p.trackCount}/${config.maxUserPlaylistTracks} lagu)`,
+            value: p.name
+          }));
+        await interaction.respond(filtered).catch(() => null);
+      } else if (
+        (interaction.commandName === 'play' || interaction.commandName === 'playlist') &&
+        focused.name === 'query'
+      ) {
+        const historyItems = playlists.searchHistory(interaction.guildId, focused.value, 25);
+        const choices = historyItems.map((item) => ({
+          name: truncate(`${item.title}${item.uploader ? ` — ${item.uploader}` : ''}`, 100),
+          value: truncate(item.url || item.title, 100)
+        }));
+        await interaction.respond(choices).catch(() => null);
       }
     } catch {
       // Autocomplete failures must not crash the bot
@@ -523,6 +619,10 @@ client.on('interactionCreate', async (interaction) => {
     try {
       if (VOICE_CONTROL_COMMANDS.has(interaction.commandName)) {
         assertSameVoiceChannel(interaction, player);
+      }
+      if (DJ_RESTRICTED_COMMANDS.has(interaction.commandName)) {
+        const member = await resolveMember(interaction);
+        assertDjOrAdmin(member, playlists.getGuildSettings(interaction.guildId));
       }
 
       switch (interaction.commandName) {
@@ -588,9 +688,21 @@ client.on('interactionCreate', async (interaction) => {
         }
         case 'skip': {
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const member = await resolveMember(interaction);
+          const vote = await evaluateSkipAccess(interaction, player, member);
+          if (!vote.allowed) {
+            await interaction.editReply({
+              content: `🗳️ Vote skip: **${vote.votes}/${vote.required}** suara dibutuhkan untuk melewati lagu.`
+            });
+            break;
+          }
           const skipped = await player.skip();
           await interaction.editReply({
-            content: skipped ? 'Lagu dilewati.' : 'Skip sebelumnya masih diproses.'
+            content: !skipped
+              ? 'Skip sebelumnya masih diproses.'
+              : vote.voted
+                ? `⏭️ Vote skip tercapai (${vote.votes}/${vote.required}). Lagu dilewati.`
+                : 'Lagu dilewati.'
           });
           scheduleInteractionDelete(interaction);
           break;
@@ -623,8 +735,11 @@ client.on('interactionCreate', async (interaction) => {
           break;
         }
         case 'stop':
-          await player.stop({ disconnect: true });
-          await interaction.reply({ content: 'Playback dihentikan.', flags: MessageFlags.Ephemeral });
+          await player.stop({ disconnect: !player.mode247 });
+          await interaction.reply({
+            content: player.mode247 ? 'Playback dihentikan (Mode 24/7 aktif, bot tetap di voice).' : 'Playback dihentikan.',
+            flags: MessageFlags.Ephemeral
+          });
           scheduleInteractionDelete(interaction);
           break;
         case 'replay': {
@@ -687,17 +802,25 @@ client.on('interactionCreate', async (interaction) => {
           scheduleInteractionDelete(interaction);
           break;
         }
-        case 'history':
+        case 'history': {
+          const sessionLines = player.history.length > 0 ? player.historyLines() : null;
+          const dbHistory = !sessionLines ? playlists.searchHistory(interaction.guildId, '', 10) : [];
+          const description = sessionLines
+            ? sessionLines.join('\n')
+            : dbHistory.length > 0
+              ? dbHistory.map((t, i) => `\`${i + 1}.\` **${truncate(t.title, 70)}** (${t.uploader || 'Unknown'})`).join('\n')
+              : 'Belum ada riwayat lagu.';
           await interaction.reply({
             embeds: [
               new EmbedBuilder()
                 .setColor(0x00c2ff)
                 .setTitle('Riwayat Lagu')
-                .setDescription(player.historyLines().join('\n'))
+                .setDescription(description)
             ],
             flags: MessageFlags.Ephemeral
           });
           break;
+        }
         case 'loop':
           player.setLoopMode(interaction.options.getString('mode', true));
           await interaction.reply({ content: `Loop mode diubah ke \`${player.loopMode}\`.`, flags: MessageFlags.Ephemeral });
@@ -773,6 +896,40 @@ client.on('interactionCreate', async (interaction) => {
             content: `Sleep timer aktif sampai <t:${Math.floor(until / 1000)}:R>.`,
             flags: MessageFlags.Ephemeral
           });
+          break;
+        }
+        case '247': {
+          const next = !player.mode247;
+          playlists.setMode247(interaction.guildId, next);
+          player.setMode247(next);
+          await interaction.reply({
+            content: next
+              ? '🌙 Mode **24/7 aktif**: bot tidak akan disconnect otomatis saat idle atau voice kosong.'
+              : '☀️ Mode **24/7 nonaktif**: timer idle/voice kosong kembali normal.',
+            flags: MessageFlags.Ephemeral
+          });
+          break;
+        }
+        case 'djrole': {
+          const member = await resolveMember(interaction);
+          if (!member?.permissions?.has(PermissionFlagsBits.ManageGuild) && !member?.permissions?.has(PermissionFlagsBits.Administrator)) {
+            throw new Error('Perintah `/djrole` memerlukan izin **Manage Server**.');
+          }
+          const sub = interaction.options.getSubcommand();
+          if (sub === 'set') {
+            const role = interaction.options.getRole('role', true);
+            playlists.setDjRole(interaction.guildId, role.id);
+            await interaction.reply({
+              content: `🎧 Role DJ ditetapkan ke <@&${role.id}>.`,
+              flags: MessageFlags.Ephemeral
+            });
+          } else {
+            playlists.setDjRole(interaction.guildId, null);
+            await interaction.reply({
+              content: '🎧 Pembatasan role DJ dihapus. Semua listener di voice dapat mengontrol player.',
+              flags: MessageFlags.Ephemeral
+            });
+          }
           break;
         }
         case 'reconnect':
@@ -1084,6 +1241,10 @@ client.on('interactionCreate', async (interaction) => {
       if (VOICE_CONTROL_BUTTONS.has(interaction.customId)) {
         assertSameVoiceChannel(interaction, player);
       }
+      if (DJ_RESTRICTED_BUTTONS.has(interaction.customId)) {
+        const member = await resolveMember(interaction);
+        assertDjOrAdmin(member, playlists.getGuildSettings(interaction.guildId));
+      }
 
       // Tombol kontrol tidak mengirim balasan sendiri: panel Now Playing
       // langsung diperbarui, jadi chat tidak dipenuhi pesan konfirmasi.
@@ -1093,16 +1254,27 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.deferUpdate();
           break;
         case 'player:skip': {
+          const member = await resolveMember(interaction);
+          const vote = await evaluateSkipAccess(interaction, player, member);
+          if (!vote.allowed) {
+            await interaction.reply({
+              content: `🗳️ Vote skip: **${vote.votes}/${vote.required}** suara dibutuhkan untuk melewati lagu.`,
+              flags: MessageFlags.Ephemeral
+            });
+            break;
+          }
           await interaction.deferUpdate();
           const skipped = await player.skip();
           if (!skipped) {
             await interaction.followUp({ content: '⏳ Skip sebelumnya masih diproses.', flags: MessageFlags.Ephemeral });
+          } else if (vote.voted) {
+            await interaction.followUp({ content: `⏭️ Vote skip tercapai (${vote.votes}/${vote.required}).` });
           }
           break;
         }
         case 'player:stop':
           await interaction.deferUpdate();
-          await player.stop({ disconnect: true });
+          await player.stop({ disconnect: !player.mode247 });
           break;
         case 'player:shuffle':
           if (player.queue.length < 2) {
@@ -1275,5 +1447,16 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+function startHealthHeartbeat() {
+  const pulse = () => {
+    if (!client.isReady()) return;
+    writeFile(HEALTH_FILE_PATH, String(Date.now())).catch(() => null);
+  };
+  client.once('clientReady', pulse);
+  const timer = setInterval(pulse, 30_000);
+  timer.unref?.();
+}
+
 registerRuntimeHandlers();
+startHealthHeartbeat();
 void loginWithRetry();

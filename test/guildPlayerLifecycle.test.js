@@ -519,3 +519,29 @@ test('GuildPlayer historyLines formats history output correctly', () => {
   assert.ok(lines[0].includes('Song B')); // Newest first (reversed)
   assert.ok(lines[1].includes('Song A'));
 });
+
+test('GuildPlayer stop resets loopMode, autoplay, and shuffleActive to defaults', async () => {
+  const context = createPlayerContext({
+    loopMode: 'track',
+    autoplay: true,
+    shuffleActive: true,
+    current: { id: 'curr', title: 'Current Track' },
+    queue: [{ id: 'q-1', title: 'Next Track' }],
+    preloadInFlight: new Set(['q-1']),
+    player: { stop: () => {} },
+    setSkipTransitionActive: () => {},
+    clearVoiceStateWatchdog: () => {},
+    setNormalMode: () => {},
+    clearEmptyChannelTimeout: () => {},
+    killCurrentProcesses: () => {},
+    clearLyricMessages: () => {},
+  });
+
+  await GuildPlayer.prototype.stop.call(context, { disconnect: false });
+
+  assert.equal(context.loopMode, 'off');
+  assert.equal(context.autoplay, false);
+  assert.equal(context.shuffleActive, false);
+  assert.equal(context.current, null);
+  assert.deepEqual(context.queue, []);
+});

@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
     unzip \
-  && curl -L https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp -o /usr/local/bin/yt-dlp \
+  && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
   && chmod a+rx /usr/local/bin/yt-dlp \
   && curl -fsSL https://deno.land/install.sh | sh \
   && ln -sf /root/.deno/bin/deno /usr/local/bin/deno \
@@ -31,5 +31,8 @@ ENV FFMPEG_PATH=/usr/bin/ffmpeg
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
 ENV HOME=/root
 ENV PYTHONPATH=/root/yt-dlp-plugins
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "const fs=require('fs');const age=Date.now()-Number(fs.readFileSync('/tmp/omnia-health','utf8'));if(!Number.isFinite(age)||age>90000)process.exit(1)"
 
 CMD ["node", "src/index.js"]

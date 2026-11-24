@@ -109,13 +109,16 @@ const CROSSFADE_DURATION_SECONDS = 3;
 const CROSSFADE_FADE_IN_DURATION_SECONDS = 2;
 
 export class GuildPlayer {
-  constructor({ client, guildId, ytdlp, lyrics, audioCache }) {
+  constructor({ client, guildId, ytdlp, lyrics, audioCache, playlists = null }) {
     console.log(`[GUILDPLAYER:${guildId}] Creating GuildPlayer instance`);
     this.client = client;
     this.guildId = guildId;
     this.ytdlp = ytdlp;
     this.lyrics = lyrics;
     this.audioCache = audioCache;
+    this.playlists = playlists;
+    this.mode247 = Boolean(this.playlists?.getGuildSettings?.(guildId)?.mode247);
+    this.skipVotes = new Set();
     this.queue = [];
     this.history = [];
     this.current = null;
@@ -186,6 +189,12 @@ export class GuildPlayer {
         return;
       }
 
+      this.skipVotes.clear();
+      try {
+        this.playlists?.recordHistory?.(this.guildId, this.current);
+      } catch (err) {
+        console.warn(`[history:${this.guildId}] failed to record:`, err?.message);
+      }
       this.currentMetrics.logged = true;
       const now = Date.now();
       const metrics = this.currentMetrics;
@@ -322,7 +331,23 @@ export class GuildPlayer {
       offlineMode: this.offlineMode,
       offlineModeQuery: this.offlineModeQuery,
       offlineModeStartedAt: this.offlineModeStartedAt,
+      mode247: this.mode247,
     };
+  }
+
+  setMode247(enabled) {
+    this.mode247 = Boolean(enabled);
+    if (this.mode247) {
+      clearTimeout(this.idleTimeout);
+      this.idleTimeout = null;
+      this.clearEmptyChannelTimeout();
+    } else {
+      if (!this.current && this.voiceChannelId) {
+        this.resetIdleTimer();
+      }
+      void this.refreshEmptyChannelTimeout();
+    }
+    return this.mode247;
   }
 
   setNormalMode(reason = "manual") {
@@ -825,6 +850,33 @@ export class GuildPlayer {
     this.youtubeStatus = "unknown";
     this.youtubeFailureReason = null;
 
+    const historyMatch = this.playlists?.findHistoryMatch?.(this.guildId, query) || null;
+    if (historyMatch) {
+      console.log(`[ENQUEUE:${this.guildId}] History hit, skipping yt-dlp search | title="${truncate(historyMatch.title, 80)}"`);
+      await this.ensureVoice(voiceChannel);
+      const track = {
+        ...historyMatch,
+        streamUrl: null,
+        preparedAt: null,
+        seekSeconds: 0,
+        httpHeaders: null,
+        metadataPending: false,
+        requester,
+        addedAt: Date.now(),
+        originalQuery: query,
+        requestStartedAt: Date.now(),
+      };
+      this.insertUserTracks([track]);
+      void this.publishNowPlaying("queue-update");
+      const isFirstPlay = !this.current;
+      if (!this.current) {
+        void this.queuePlayNext("enqueue-history");
+      } else {
+        void this.preloadUpcomingTracks();
+      }
+      return { type: "single", fromHistory: true, tracks: [track], isFirstPlay };
+    }
+
     // Jalankan join voice + resolve metadata secara paralel (hemat 2-4 detik)
     let resolved;
     try {
@@ -1290,6 +1342,10 @@ export class GuildPlayer {
 
   resetIdleTimer() {
     clearTimeout(this.idleTimeout);
+    if (this.mode247) {
+      this.idleTimeout = null;
+      return;
+    }
     this.idleTimeout = setTimeout(() => {
       void this.sendStatusMessage(
         `Tidak ada lagu yang diputar selama ${Math.round(config.defaultIdleTimeoutMs / 60000)} menit. Bot disconnect otomatis.`,
@@ -1305,6 +1361,7 @@ export class GuildPlayer {
 
   scheduleEmptyChannelTimeout() {
     if (
+      this.mode247 ||
       this.emptyChannelTimeout ||
       !this.voiceChannelId ||
       this.stopRequested
@@ -2812,6 +2869,7 @@ export class GuildPlayer {
     this.finishedTrack = null;
     this.currentMetrics = null;
     this.playbackStartedAt = null;
+    this.loopMode = "off";
     this.autoplay = false;
     this.shuffleActive = false;
     this.consecutiveErrors = 0;

@@ -1,8 +1,8 @@
 import { SlashCommandBuilder } from 'discord.js';
 
 export const commands = [
-  new SlashCommandBuilder().setName('play').setDescription('Putar lagu atau playlist').addStringOption((option) =>
-    option.setName('query').setDescription('Judul lagu, URL video, atau playlist URL').setRequired(true)
+  new SlashCommandBuilder().setName('play').setDescription('Putar lagu atau playlist (YouTube, Spotify, Apple Music)').addStringOption((option) =>
+    option.setName('query').setDescription('Judul lagu atau URL (YouTube, Spotify, Apple Music)').setAutocomplete(true).setRequired(true)
   ),
   new SlashCommandBuilder().setName('offlinemode').setDescription('Mulai sesi playback hanya dari cache lokal')
     .addStringOption((option) =>
@@ -56,6 +56,19 @@ export const commands = [
     option.setName('minutes').setDescription('Jumlah menit').setRequired(true)
   ),
   new SlashCommandBuilder().setName('reconnect').setDescription('Sambung ulang voice connection'),
+  new SlashCommandBuilder().setName('247').setDescription('Toggle mode 24/7 (bot tetap di voice tanpa idle timeout)'),
+  new SlashCommandBuilder()
+    .setName('djrole')
+    .setDescription('Atur role DJ untuk kontrol playback (khusus Manage Server)')
+    .addSubcommand((sub) =>
+      sub
+        .setName('set')
+        .setDescription('Tetapkan role DJ')
+        .addRoleOption((opt) => opt.setName('role').setDescription('Role yang diizinkan mengontrol player').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName('clear').setDescription('Hapus pembatasan role DJ')
+    ),
   new SlashCommandBuilder()
     .setName('playlist')
     .setDescription('Kelola dan putar playlist pribadi Anda')
@@ -77,7 +90,7 @@ export const commands = [
         .setName('add')
         .setDescription('Tambah satu lagu ke playlist')
         .addStringOption((opt) => opt.setName('name').setDescription('Nama playlist tujuan').setAutocomplete(true).setRequired(true))
-        .addStringOption((opt) => opt.setName('query').setDescription('Judul atau URL lagu').setRequired(true))
+        .addStringOption((opt) => opt.setName('query').setDescription('Judul atau URL lagu').setAutocomplete(true).setRequired(true))
     )
     .addSubcommand((sub) =>
       sub

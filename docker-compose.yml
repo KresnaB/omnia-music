@@ -20,6 +20,6 @@ services:
     env_file:
       - .env.bot2
     volumes:
-      - ./storage-bot2/audio-cache:/config/audio-cache
+      - ./storage/audio-cache:/config/audio-cache
       - ./storage-bot2:/app/storage
       - ./cookies.txt:/config/cookies.txt
